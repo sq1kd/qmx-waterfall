@@ -49,12 +49,6 @@ static uac_host_stream_config_t s_iq_stream_cfg = {0};
 static bool s_iq_stream_started = false;
 static bool s_spectrum_started = false;
 static bool s_iq_start_in_progress = false;
-static bool s_cli_iq_swap = false;
-static bool s_cli_iq_invert_i = false;
-static bool s_cli_iq_invert_q = false;
-static int s_cli_iq_fmt = 0;
-static uint8_t s_uac_alt_indices[8];
-static uint8_t s_uac_alt_count = 0;
 
 static void trigger_iq_start_async(void);
 
@@ -221,7 +215,6 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
         ESP_LOGW(TAG, "uac_host_get_device_alt_param(1) failed; using defaults");
     }
 
-    s_uac_alt_count = 0;
     for (uint8_t alt = 0; alt < 8; alt++)
     {
         uac_host_dev_alt_param_t ap = {0};
@@ -230,10 +223,6 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
             uint32_t sf = (ap.sample_freq_type > 0) ? ap.sample_freq[0] : ap.sample_freq_lower;
             ESP_LOGI(TAG, "Alt%u fmt=%u ch=%u bits=%u sf=%lu",
                      alt, ap.format, ap.channels, ap.bit_resolution, (unsigned long)sf);
-            if (s_uac_alt_count < sizeof(s_uac_alt_indices))
-            {
-                s_uac_alt_indices[s_uac_alt_count++] = alt;
-            }
         }
     }
     spectrum_set_stream_params(channels, bit_res, freq);
@@ -472,116 +461,6 @@ static void handle_cli_line(const char *line)
         spectrum_clear();
         ESP_LOGI(TAG, "[sp] cleared");
     }
-    else if (strncmp(line, "sp stat", 7) == 0)
-    {
-        spectrum_runtime_t rt;
-        if (spectrum_get_runtime(&rt))
-        {
-            ESP_LOGI(TAG,
-                     "[sp] off=%.1f",
-                     rt.level_offset_db);
-            ESP_LOGI(TAG, "[iq] src=%u fmt=%u swap=%u inv_i=%u inv_q=%u rms_i=%.4f rms_q=%.4f corr=%.3f",
-                     rt.iq_source,
-                     rt.iq_fmt,
-                     rt.iq_swap,
-                     rt.iq_invert_i,
-                     rt.iq_invert_q,
-                     rt.iq_rms_i,
-                     rt.iq_rms_q,
-                     rt.iq_corr);
-            ESP_LOGI(TAG, "[iq] bps=%u",
-                     rt.iq_bytes_per_sample);
-        }
-    }
-    else if (sscanf(line, "iq swap %d", &mode) == 1)
-    {
-        s_cli_iq_swap = (mode != 0);
-        spectrum_set_iq_transform(s_cli_iq_swap, s_cli_iq_invert_i, s_cli_iq_invert_q);
-        ESP_LOGI(TAG, "[iq] swap=%d", s_cli_iq_swap ? 1 : 0);
-    }
-    else if (sscanf(line, "iq invi %d", &mode) == 1)
-    {
-        s_cli_iq_invert_i = (mode != 0);
-        spectrum_set_iq_transform(s_cli_iq_swap, s_cli_iq_invert_i, s_cli_iq_invert_q);
-        ESP_LOGI(TAG, "[iq] inv_i=%d", s_cli_iq_invert_i ? 1 : 0);
-    }
-    else if (sscanf(line, "iq invq %d", &mode) == 1)
-    {
-        s_cli_iq_invert_q = (mode != 0);
-        spectrum_set_iq_transform(s_cli_iq_swap, s_cli_iq_invert_i, s_cli_iq_invert_q);
-        ESP_LOGI(TAG, "[iq] inv_q=%d", s_cli_iq_invert_q ? 1 : 0);
-    }
-    else if (strncmp(line, "iq stat", 7) == 0)
-    {
-        spectrum_runtime_t rt;
-        if (spectrum_get_runtime(&rt))
-        {
-            ESP_LOGI(TAG, "[iq] src=%u fmt=%u swap=%u inv_i=%u inv_q=%u rms_i=%.4f rms_q=%.4f corr=%.3f",
-                     rt.iq_source,
-                     rt.iq_fmt,
-                     rt.iq_swap,
-                     rt.iq_invert_i,
-                     rt.iq_invert_q,
-                     rt.iq_rms_i,
-                     rt.iq_rms_q,
-                     rt.iq_corr);
-            ESP_LOGI(TAG, "[iq] bps=%u",
-                     rt.iq_bytes_per_sample);
-        }
-    }
-    else if (sscanf(line, "iq src %d", &mode) == 1)
-    {
-        if (mode < 0)
-            mode = 0;
-        if (mode > 3)
-            mode = 3;
-        spectrum_set_iq_source((uint8_t)mode);
-        ESP_LOGI(TAG, "[iq] src=%d (0=iq 1=i_only 2=q_only 3=mono_dup)", mode);
-    }
-    else if (sscanf(line, "iq fmt %d", &mode) == 1)
-    {
-        if (mode < 0)
-            mode = 0;
-        if (mode > 2)
-            mode = 2;
-        s_cli_iq_fmt = mode;
-        spectrum_set_iq_format((uint8_t)mode);
-        ESP_LOGI(TAG, "[iq] fmt=%d (0=auto 1=24-in-3 2=24-in-4)", mode);
-    }
-    else if (strncmp(line, "iq hex", 6) == 0)
-    {
-        spectrum_hex_dump();
-        ESP_LOGI(TAG, "[iq] hex dump requested (will print on next USB read)");
-    }
-    else if (strncmp(line, "iq dump", 7) == 0)
-    {
-        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-        uac_host_device_handle_t h = s_iq_handle;
-        xSemaphoreGive(s_dev_mutex);
-
-        ESP_LOGI(TAG, "[iq] cfg channels=%u bit=%u freq=%lu fmt_mode=%d",
-                 s_iq_stream_cfg.channels,
-                 s_iq_stream_cfg.bit_resolution,
-                 (unsigned long)s_iq_stream_cfg.sample_freq,
-                 s_cli_iq_fmt);
-
-        if (h)
-        {
-            for (uint8_t i = 0; i < s_uac_alt_count; i++)
-            {
-                uint8_t alt = s_uac_alt_indices[i];
-                uac_host_dev_alt_param_t ap = {0};
-                esp_err_t err = uac_host_get_device_alt_param(h, alt, &ap);
-                if (err == ESP_OK)
-                {
-                    uint32_t sf = (ap.sample_freq_type > 0) ? ap.sample_freq[0] : ap.sample_freq_lower;
-                    ESP_LOGI(TAG, "[iq] alt%u fmt=%u ch=%u bits=%u sf_type=%u sf=%lu",
-                             alt, ap.format, ap.channels, ap.bit_resolution,
-                             ap.sample_freq_type, (unsigned long)sf);
-                }
-            }
-        }
-    }
     else if (sscanf(line, "sp view %d", &mode) == 1)
     {
         if (mode < 0) mode = 0;
@@ -602,27 +481,9 @@ static void handle_cli_line(const char *line)
             ESP_LOGI(TAG, "[sp] usage: sp range <floor_dB> <ceil_dB>");
         }
     }
-    else if (strncmp(line, "sp dbg2", 7) == 0)
-    {
-        spectrum_synth_fft_test();
-        ESP_LOGI(TAG, "[sp] synthetic FFT test requested (will run on next task wake)");
-    }
-    else if (strncmp(line, "sp dbg", 6) == 0)
-    {
-        spectrum_dbg_frame();
-        ESP_LOGI(TAG, "[sp] debug frame requested (will print on next FFT)");
-    }
-    else if (strncmp(line, "sp test", 7) == 0)
-    {
-        spectrum_test_pattern();
-    }
     else if (strncmp(line, "sp", 2) == 0)
     {
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp clear | sp stat | sp view <0|1> | sp range <floor> <ceil> | sp dbg | sp dbg2 | sp test");
-    }
-    else if (strncmp(line, "iq", 2) == 0)
-    {
-        ESP_LOGI(TAG, "[iq] usage: iq src <0..3> | iq fmt <0..2> | iq hex | iq dump | iq swap <0|1> | iq invi <0|1> | iq invq <0|1> | iq stat");
+        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp clear | sp view <0|1> | sp range <floor> <ceil>");
     }
 }
 
@@ -633,7 +494,7 @@ static void monitor_cli_task(void *arg)
     char line[CLI_BUF_SZ];
     size_t line_len = 0;
 
-    ESP_LOGI(TAG, "UART CLI ready on UART0. Commands: sp ... | iq ...");
+    ESP_LOGI(TAG, "UART CLI ready on UART0. Commands: sp ...");
     while (true)
     {
         int n = uart_read_bytes(CLI_UART_NUM, rx, sizeof(rx), pdMS_TO_TICKS(50));

@@ -22,20 +22,6 @@ typedef struct
                          /* Set to 0 to disable the marker.            */
 } spectrum_cfg_t;
 
-typedef struct
-{
-    uint8_t iq_swap;
-    uint8_t iq_invert_i;
-    uint8_t iq_invert_q;
-    uint8_t iq_source;
-    uint8_t iq_fmt;
-    uint8_t iq_bytes_per_sample;
-    float level_offset_db;
-    float iq_rms_i;
-    float iq_rms_q;
-    float iq_corr;
-} spectrum_runtime_t;
-
 /* Fill *cfg with safe defaults. */
 void spectrum_default_cfg(spectrum_cfg_t *cfg);
 
@@ -51,18 +37,6 @@ void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution,
 /* Update CAT-derived mode/filter for spectrum filter overlay rendering. */
 void spectrum_set_filter_params(uint8_t mode_code, uint32_t filter_hz);
 
-/* Runtime IQ transform controls for direction/mirroring diagnostics. */
-void spectrum_set_iq_transform(bool swap_iq, bool invert_i, bool invert_q);
-
-/* IQ source debug mode: 0=iq, 1=i_only, 2=q_only, 3=mono_dup. */
-void spectrum_set_iq_source(uint8_t source_mode);
-
-/* IQ sample format mode: 0=auto(prefer 24-in-32), 1=24-in-3, 2=24-in-4. */
-void spectrum_set_iq_format(uint8_t fmt_mode);
-
-/* Snapshot current runtime controls/status for CLI diagnostics. */
-bool spectrum_get_runtime(spectrum_runtime_t *out);
-
 /* Apply display level offset before mapping to colors. */
 void spectrum_set_level_offset_db(float offset_db);
 
@@ -71,18 +45,6 @@ void spectrum_set_view_mode(uint8_t mode);
 
 /* Set waterfall dB floor and ceiling for colour mapping. */
 void spectrum_set_wf_range(float floor_db, float ceil_db);
-
-/* Print min/max/mean dB of the current FFT frame to console. */
-void spectrum_dbg_frame(void);
-
-/* Run a synthetic sine-wave FFT and print Parseval diagnostics. */
-void spectrum_synth_fft_test(void);
-
-/* Print raw hex dump of next USB audio frames to console. */
-void spectrum_hex_dump(void);
-
-/* Fill waterfall with a synthetic gradient test pattern. */
-void spectrum_test_pattern(void);
 
 /* Clear spectrum and spectrum canvas immediately. */
 void spectrum_clear(void);
@@ -97,7 +59,7 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg);
 
 /*
  * Called from the UAC RX_DONE device callback (core 0) to wake the spectrum
- * task.  Safe to call from any context (uses xTaskNotifyFromISR-safe path).
+ * task. Called from task context.
  */
 void spectrum_notify_rx(uac_host_device_handle_t handle);
 

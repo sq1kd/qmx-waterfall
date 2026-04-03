@@ -130,17 +130,6 @@ static struct
     uint8_t mode_code;
     uint32_t filter_hz;
 
-    /* IQ transform controls */
-    bool iq_swap;
-    bool iq_invert_i;
-    bool iq_invert_q;
-    uint8_t iq_source;
-    uint8_t iq_fmt;
-
-    float iq_rms_i;
-    float iq_rms_q;
-    float iq_corr;
-
     float level_offset_db;
 
     /* Waterfall state */
@@ -149,11 +138,6 @@ static struct
     float wf_db_floor;      /* dB value mapping to LUT index 0         */
     float wf_db_ceil;       /* dB value mapping to LUT index 255       */
     uint8_t view_mode;      /* 0=full spectrum, 1=positive-only         */
-
-    /* Debug */
-    bool dbg_frame_pending;   /* set by spectrum_dbg_frame(), cleared after print */
-    bool hex_dump_pending;    /* set by spectrum_hex_dump(), cleared after print  */
-    bool synth_fft_pending;   /* set by spectrum_synth_fft_test(), run on next iter */
 
 } s;
 
@@ -188,29 +172,6 @@ static inline uint8_t db_to_color_idx(float db)
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                     */
 /* -------------------------------------------------------------------------- */
-
-static uint8_t choose_bytes_per_sample(void)
-{
-    if (s.bit_resolution == 24)
-    {
-        if (s.iq_fmt == 2)
-        {
-            return 4;
-        }
-        if (s.iq_fmt == 1)
-        {
-            return 3;
-        }
-        if (s.bytes_per_sample >= 4)
-        {
-            return 4;
-        }
-        /* Default to 3 for 24-bit: QMX uses bSubframeSize=3.
-         * Use 'iq fmt 2' to force 4-byte containers if needed. */
-        return 3;
-    }
-    return (uint8_t)((s.bit_resolution + 7) / 8);
-}
 
 /*
  * Bin/pixel mapping.  In full-spectrum mode the full fft_size bins span
@@ -427,88 +388,12 @@ static void spectrum_task(void *arg)
     const uint32_t fft_size = s.cfg.fft_size;
     const uint32_t ms_per_line = (uint32_t)(1000.0f / s.cfg.lines_per_sec);
     TickType_t last_push = 0;
-    uint32_t log_ctr = 0;
-
     while (true)
     {
         /* Wait for RX_DONE notification from core 0.
          * pdTRUE clears the notification count, but we drain the ring
          * buffer fully below so stacked notifications are harmless. */
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        /* ---- Synthetic FFT sanity test (sp dbg2) ---- */
-        if (s.synth_fft_pending)
-        {
-            s.synth_fft_pending = false;
-            ESP_LOGI(TAG, "[synth] running synthetic FFT test (N=%u)...",
-                     (unsigned)fft_size);
-
-            /* 1. Fill fft_buf with a known complex sinusoid at bin 64
-             *    x[n] = cos(2π·64·n/N) + j·sin(2π·64·n/N)
-             *    windowed with Hann.  Expected: energy in bin 64 only. */
-            const int test_bin = 64;
-            float synth_sum_t = 0.0f;
-            for (uint32_t n = 0; n < fft_size; n++)
-            {
-                float phase = 2.0f * (float)M_PI * (float)test_bin * (float)n / (float)fft_size;
-                float re_in = cosf(phase) * s.window[n];
-                float im_in = sinf(phase) * s.window[n];
-                s.fft_buf[n * 2]     = re_in;
-                s.fft_buf[n * 2 + 1] = im_in;
-                synth_sum_t += re_in * re_in + im_in * im_in;
-            }
-            ESP_LOGI(TAG, "[synth] time_pwr=%.6e  (N samples, bin=%d)", synth_sum_t, test_bin);
-
-            /* 2. Run FFT + bit-reversal — use ANSI C path to bypass AES3 SIMD */
-            dsps_fft2r_fc32_ansi(s.fft_buf, (int)fft_size);
-            dsps_bit_rev_fc32(s.fft_buf, (int)fft_size);
-
-            /* 3. Compute mag² and stats */
-            float synth_sum_f = 0.0f;
-            float synth_max = 0.0f;
-            int synth_max_bin = 0;
-            for (uint32_t k = 0; k < fft_size; k++)
-            {
-                float re = s.fft_buf[k * 2];
-                float im = s.fft_buf[k * 2 + 1];
-                float pwr = re * re + im * im;
-                synth_sum_f += pwr;
-                if (pwr > synth_max) { synth_max = pwr; synth_max_bin = (int)k; }
-            }
-            float synth_ratio = (synth_sum_t > 1e-30f) ? synth_sum_f / synth_sum_t : 0.0f;
-
-            ESP_LOGI(TAG, "[synth] freq_pwr=%.6e  ratio=%.1f (expect %u)",
-                     synth_sum_f, synth_ratio, (unsigned)fft_size);
-            ESP_LOGI(TAG, "[synth] max_bin=%d (expect %d)  max_pwr=%.6e (%.1f dB)",
-                     synth_max_bin, test_bin, synth_max,
-                     10.0f * log10f(synth_max + 1e-12f));
-
-            /* Print a few bins around the expected peak and DC */
-            for (int b = test_bin - 2; b <= test_bin + 2; b++)
-            {
-                if (b >= 0 && b < (int)fft_size)
-                {
-                    float re = s.fft_buf[b * 2];
-                    float im = s.fft_buf[b * 2 + 1];
-                    float p = re * re + im * im;
-                    ESP_LOGI(TAG, "[synth] bin[%d]=(%.4f,%.4f) pwr=%.4e (%.1f dB)",
-                             b, re, im, p, 10.0f * log10f(p + 1e-12f));
-                }
-            }
-            /* Also print DC bin and bin N/2 */
-            {
-                float re0 = s.fft_buf[0], im0 = s.fft_buf[1];
-                float pdc = re0 * re0 + im0 * im0;
-                float reH = s.fft_buf[fft_size], imH = s.fft_buf[fft_size + 1];
-                float pnyq = reH * reH + imH * imH;
-                ESP_LOGI(TAG, "[synth] DC[0]=(%.4f,%.4f) pwr=%.4e  Nyq[%u]=(%.4f,%.4f) pwr=%.4e",
-                         re0, im0, pdc, (unsigned)(fft_size / 2), reH, imH, pnyq);
-            }
-
-            ESP_LOGI(TAG, "[synth] test complete");
-            /* Reset accum_idx so next real data starts fresh */
-            s.accum_idx = 0;
-        }
 
         if (s.uac_handle == NULL)
         {
@@ -520,7 +405,7 @@ static void spectrum_task(void *arg)
          * We must consume it all to prevent ring buffer overflow and
          * the resulting byte-stream discontinuities.  Display rendering
          * is rate-limited separately below. */
-        const uint8_t bytes_per_sample = choose_bytes_per_sample();
+        const uint8_t bytes_per_sample = s.bytes_per_sample;
         const uint8_t frame_bytes = bytes_per_sample * s.channels;
 
         while (true)
@@ -537,36 +422,6 @@ static void spectrum_task(void *arg)
             }
 
             const uint32_t frames = bytes_read / frame_bytes;
-
-            /* Raw hex dump: print first 4 stereo frames when requested */
-            if (s.hex_dump_pending && bytes_read >= (uint32_t)(frame_bytes * 4))
-            {
-                s.hex_dump_pending = false;
-                ESP_LOGI(TAG, "[hex] bps=%u frame_bytes=%u read=%lu frames=%lu",
-                         bytes_per_sample, frame_bytes, (unsigned long)bytes_read,
-                         (unsigned long)frames);
-                for (int hf = 0; hf < 4 && hf < (int)frames; hf++)
-                {
-                    const uint8_t *hp = s.read_raw + hf * frame_bytes;
-                    if (bytes_per_sample == 4)
-                    {
-                        ESP_LOGI(TAG, "[hex] f%d: I=[%02x %02x %02x %02x] Q=[%02x %02x %02x %02x]",
-                                 hf, hp[0], hp[1], hp[2], hp[3],
-                                 hp[4], hp[5], hp[6], hp[7]);
-                    }
-                    else if (bytes_per_sample == 3)
-                    {
-                        ESP_LOGI(TAG, "[hex] f%d: I=[%02x %02x %02x] Q=[%02x %02x %02x]",
-                                 hf, hp[0], hp[1], hp[2],
-                                 hp[3], hp[4], hp[5]);
-                    }
-                    else
-                    {
-                        ESP_LOGI(TAG, "[hex] f%d: I=[%02x %02x] Q=[%02x %02x]",
-                                 hf, hp[0], hp[1], hp[2], hp[3]);
-                    }
-                }
-            }
 
             for (uint32_t f = 0; f < frames; f++)
             {
@@ -619,41 +474,6 @@ static void spectrum_task(void *arg)
                     q_samp = (float)qv / 32768.0f;
                 }
 
-                if (s.iq_invert_i)
-                {
-                    i_samp = -i_samp;
-                }
-                if (s.iq_invert_q)
-                {
-                    q_samp = -q_samp;
-                }
-                if (s.iq_swap)
-                {
-                    float t = i_samp;
-                    i_samp = q_samp;
-                    q_samp = t;
-                }
-
-                switch (s.iq_source)
-                {
-                case 1: /* I only */
-                    q_samp = 0.0f;
-                    break;
-                case 2: /* Q only */
-                    i_samp = q_samp;
-                    q_samp = 0.0f;
-                    break;
-                case 3: /* mono dup */
-                {
-                    float m = 0.5f * (i_samp + q_samp);
-                    i_samp = m;
-                    q_samp = m;
-                    break;
-                }
-                default:
-                    break;
-                }
-
                 /* fft_buf layout: [Re0, Im0, Re1, Im1, ...] */
                 uint32_t idx = s.accum_idx;
                 s.fft_buf[idx * 2] = i_samp * s.window[idx];
@@ -663,36 +483,6 @@ static void spectrum_task(void *arg)
                 if (s.accum_idx >= fft_size)
                 {
                     s.accum_idx = 0;
-
-                    float sum_i2 = 0.0f;
-                    float sum_q2 = 0.0f;
-                    float sum_iq = 0.0f;
-                    for (uint32_t n = 0; n < fft_size; n++)
-                    {
-                        float i0 = s.fft_buf[n * 2];
-                        float q0 = s.fft_buf[n * 2 + 1];
-                        sum_i2 += i0 * i0;
-                        sum_q2 += q0 * q0;
-                        sum_iq += i0 * q0;
-                    }
-                    s.iq_rms_i = sqrtf(sum_i2 / (float)fft_size);
-                    s.iq_rms_q = sqrtf(sum_q2 / (float)fft_size);
-                    float denom = sqrtf(sum_i2 * sum_q2) + 1e-12f;
-                    s.iq_corr = sum_iq / denom;
-
-                    /* Snapshot a few time-domain samples before FFT overwrites them */
-                    float dbg_td[8]; /* [Re0,Im0,Re1,Im1,Re127,Im127,Re255,Im255] */
-                    if (s.dbg_frame_pending)
-                    {
-                        dbg_td[0] = s.fft_buf[0];
-                        dbg_td[1] = s.fft_buf[1];
-                        dbg_td[2] = s.fft_buf[2];
-                        dbg_td[3] = s.fft_buf[3];
-                        dbg_td[4] = s.fft_buf[254];
-                        dbg_td[5] = s.fft_buf[255];
-                        dbg_td[6] = s.fft_buf[510];
-                        dbg_td[7] = s.fft_buf[511];
-                    }
 
                     /* Run FFT — use ANSI C path to bypass AES3 SIMD */
                     dsps_fft2r_fc32_ansi(s.fft_buf, (int)fft_size);
@@ -713,64 +503,6 @@ static void spectrum_task(void *arg)
                     /* Shift so DC is in the centre (negative freq left) */
                     fftshift_mag(mag, (int)fft_size);
 
-                    /* Debug: enhanced Parseval diagnostics if requested */
-                    if (s.dbg_frame_pending)
-                    {
-                        s.dbg_frame_pending = false;
-
-                        /* 1. Frequency-domain stats on mag[] (already computed) */
-                        float db_min = 999.0f, db_max = -999.0f, db_sum = 0.0f;
-                        float pwr_sum_freq = 0.0f;
-                        float pwr_max = 0.0f;
-                        int pwr_max_bin = 0;
-                        int nbins = (int)fft_size;  /* always report full spectrum */
-                        for (int k = 0; k < nbins; k++)
-                        {
-                            float pwr = mag[k];
-                            pwr_sum_freq += pwr;
-                            if (pwr > pwr_max) { pwr_max = pwr; pwr_max_bin = k; }
-                            float db = 10.0f * log10f(pwr + 1e-12f) + s.level_offset_db;
-                            if (db < db_min) db_min = db;
-                            if (db > db_max) db_max = db;
-                            db_sum += db;
-                        }
-
-                        /* 2. Time-domain power (sum_i2 + sum_q2 already computed
-                         *    before FFT in the RMS block above) */
-                        float pwr_sum_time = sum_i2 + sum_q2;
-
-                        /* 3. Parseval ratio: should be N for unnormalized DFT */
-                        float parseval_ratio = (pwr_sum_time > 1e-30f)
-                                             ? pwr_sum_freq / pwr_sum_time
-                                             : 0.0f;
-
-                        ESP_LOGI(TAG, "[dbg] frame: min=%.1f max=%.1f mean=%.1f dB (bins=%d)",
-                                 db_min, db_max, db_sum / (float)nbins, nbins);
-                        ESP_LOGI(TAG, "[dbg] time_pwr=%.3e  freq_pwr=%.3e  ratio=%.1f (expect %u)",
-                                 pwr_sum_time, pwr_sum_freq, parseval_ratio, (unsigned)fft_size);
-                        ESP_LOGI(TAG, "[dbg] rms_i=%.6f rms_q=%.6f  max_bin=%d max_pwr=%.3e (%.1f dB)",
-                                 s.iq_rms_i, s.iq_rms_q, pwr_max_bin, pwr_max,
-                                 10.0f * log10f(pwr_max + 1e-12f));
-                        ESP_LOGI(TAG, "[dbg] DC_pwr=%.3e (%.1f dB)  bin1_pwr=%.3e (%.1f dB)",
-                                 mag[fft_size / 2], 10.0f * log10f(mag[fft_size / 2] + 1e-12f),
-                                 mag[fft_size / 2 + 1], 10.0f * log10f(mag[fft_size / 2 + 1] + 1e-12f));
-                        /* 4. First 4 raw time-domain samples (already overwritten by FFT,
-                         *    so print from the NEXT accumulation's perspective: use the
-                         *    last windowed values we can recover — actually we can't,
-                         *    but we have rms which is enough. Instead print sample[0..3]
-                         *    from the current fft_buf which now has FFT output.)
-                         *    Print a few FFT output bins directly: */
-                        ESP_LOGI(TAG, "[dbg] fft_out[0]=(%.6f,%.6f) [1]=(%.6f,%.6f) [%u]=(%.6f,%.6f)",
-                                 s.fft_buf[0], s.fft_buf[1],
-                                 s.fft_buf[2], s.fft_buf[3],
-                                 (unsigned)(fft_size / 2),
-                                 s.fft_buf[fft_size], s.fft_buf[fft_size + 1]);
-                        /* 5. Time-domain samples captured BEFORE FFT */
-                        ESP_LOGI(TAG, "[dbg] td[0]=(%.6f,%.6f) [1]=(%.6f,%.6f) [127]=(%.6f,%.6f) [255]=(%.6f,%.6f)",
-                                 dbg_td[0], dbg_td[1], dbg_td[2], dbg_td[3],
-                                 dbg_td[4], dbg_td[5], dbg_td[6], dbg_td[7]);
-                    }
-
                     /* Select sub-array for positive-only mode */
                     const float *render_mag = mag;
                     int render_bins = (int)fft_size;
@@ -782,14 +514,6 @@ static void spectrum_task(void *arg)
 
                     /* Always store waterfall row (cheap, keeps history current) */
                     store_wf_row(render_mag, render_bins);
-
-                    /* Periodic scale diagnostics (~every 5 s at ~94 FFTs/s) */
-                    if (++log_ctr >= 512)
-                    {
-                        log_ctr = 0;
-                        ESP_LOGI(TAG, "[iq] src=%u rms_i=%.4f rms_q=%.4f corr=%.3f",
-                                 (unsigned)s.iq_source, s.iq_rms_i, s.iq_rms_q, s.iq_corr);
-                    }
 
                     /* Rate-limited display push: render + push only when
                      * enough time has elapsed since the last frame. */
@@ -847,52 +571,6 @@ void spectrum_set_filter_params(uint8_t mode_code, uint32_t filter_hz)
     s.filter_hz = filter_hz;
 }
 
-void spectrum_set_iq_transform(bool swap_iq, bool invert_i, bool invert_q)
-{
-    s.iq_swap = swap_iq;
-    s.iq_invert_i = invert_i;
-    s.iq_invert_q = invert_q;
-}
-
-void spectrum_set_iq_source(uint8_t source_mode)
-{
-    if (source_mode > 3)
-    {
-        source_mode = 0;
-    }
-    s.iq_source = source_mode;
-}
-
-void spectrum_set_iq_format(uint8_t fmt_mode)
-{
-    if (fmt_mode > 2)
-    {
-        fmt_mode = 0;
-    }
-    s.iq_fmt = fmt_mode;
-    s.bytes_per_sample = choose_bytes_per_sample();
-}
-
-bool spectrum_get_runtime(spectrum_runtime_t *out)
-{
-    if (!out)
-    {
-        return false;
-    }
-
-    out->iq_swap = s.iq_swap ? 1 : 0;
-    out->iq_invert_i = s.iq_invert_i ? 1 : 0;
-    out->iq_invert_q = s.iq_invert_q ? 1 : 0;
-    out->iq_source = s.iq_source;
-    out->iq_fmt = s.iq_fmt;
-    out->iq_bytes_per_sample = s.bytes_per_sample;
-    out->level_offset_db = s.level_offset_db;
-    out->iq_rms_i = s.iq_rms_i;
-    out->iq_rms_q = s.iq_rms_q;
-    out->iq_corr = s.iq_corr;
-    return true;
-}
-
 void spectrum_set_level_offset_db(float offset_db)
 {
     if (offset_db < -80.0f)
@@ -944,63 +622,6 @@ void spectrum_set_wf_range(float floor_db, float ceil_db)
     s.wf_db_floor = floor_db;
     s.wf_db_ceil = ceil_db;
     ESP_LOGI(TAG, "[sp] wf range: %.1f .. %.1f dB", floor_db, ceil_db);
-}
-
-void spectrum_dbg_frame(void)
-{
-    s.dbg_frame_pending = true;
-}
-
-void spectrum_synth_fft_test(void)
-{
-    s.synth_fft_pending = true;
-}
-
-void spectrum_hex_dump(void)
-{
-    s.hex_dump_pending = true;
-}
-
-void spectrum_test_pattern(void)
-{
-    if (!s.wf_db) {
-        ESP_LOGW(TAG, "[sp] no waterfall buffer");
-        return;
-    }
-
-    /* Fill waterfall ring buffer with a gradient: each row goes from
-     * wf_db_floor (left) to wf_db_ceil (right), with row brightness
-     * increasing from top to bottom. */
-    for (int row = 0; row < WF_H; row++)
-    {
-        float row_scale = (float)row / (float)(WF_H - 1);  /* 0..1 */
-        float *dst = &s.wf_db[row * DISP_W];
-        for (int x = 0; x < DISP_W; x++)
-        {
-            float col_frac = (float)x / (float)(DISP_W - 1);  /* 0..1 */
-            dst[x] = s.wf_db_floor + (s.wf_db_ceil - s.wf_db_floor) * col_frac * row_scale;
-        }
-    }
-    s.wf_write_idx = 0; /* reset ring pointer so row 0 = newest */
-
-    /* Render immediately */
-    if (s.canvas_buf)
-    {
-        draw_waterfall(s.canvas_buf);
-
-        /* Also fill spectrum strip with background + label */
-        for (int i = 0; i < SPEC_H * DISP_W; i++)
-            s.canvas_buf[i] = SPEC_BG;
-
-        if (lvgl_port_lock(0))
-        {
-            lv_obj_invalidate(s.canvas);
-            lvgl_port_unlock();
-        }
-    }
-
-    ESP_LOGI(TAG, "[sp] test pattern drawn (floor=%.1f ceil=%.1f)",
-             s.wf_db_floor, s.wf_db_ceil);
 }
 
 void spectrum_clear(void)
@@ -1158,7 +779,6 @@ void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution,
     s.bit_resolution = bit_resolution;
     s.sample_freq = sample_freq;
     s.bytes_per_sample = (uint8_t)((bit_resolution + 7) / 8);
-    s.bytes_per_sample = choose_bytes_per_sample();
 }
 
 void spectrum_notify_rx(uac_host_device_handle_t handle)
