@@ -22,15 +22,18 @@ static const char *TAG = "spectrum";
 void spectrum_pipeline_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "spectrum task started (fft=%u, %.1f lines/s, view=%u)",
+    ESP_LOGD(TAG, "spectrum task started (fft=%u, %.1f lines/s, view=%u)",
              s.cfg.fft_size, s.cfg.lines_per_sec, s.view_mode);
 
     const uint32_t fft_size = s.cfg.fft_size;
     const uint32_t ms_per_line = (uint32_t)(1000.0f / s.cfg.lines_per_sec);
     TickType_t last_push = 0;
-    while (true)
+    while (s.running)
     {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+
+        if (!s.running)
+            break;
 
         if (s.uac_handle == NULL)
             continue;
@@ -161,4 +164,7 @@ void spectrum_pipeline_task(void *arg)
             }
         }
     }
+
+    s.task_handle = NULL;
+    vTaskDelete(NULL);
 }

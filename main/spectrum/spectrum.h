@@ -95,3 +95,6 @@ void spectrum_notify_rx(uac_host_device_handle_t handle);
  * Call before uac_host_device_stop().
  */
 void spectrum_stop(void);
+
+/* Runtime state helper for lifecycle assertions/debug. */
+bool spectrum_is_running(void);

@@ -12,6 +12,23 @@ uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b)
            ((uint16_t)(b >> 3));
 }
 
+static uint16_t blend_rgb565(uint16_t dst, uint16_t src, uint8_t alpha)
+{
+    uint8_t dr = (uint8_t)((dst >> 11) & 0x1F);
+    uint8_t dg = (uint8_t)((dst >> 5) & 0x3F);
+    uint8_t db = (uint8_t)(dst & 0x1F);
+
+    uint8_t sr = (uint8_t)((src >> 11) & 0x1F);
+    uint8_t sg = (uint8_t)((src >> 5) & 0x3F);
+    uint8_t sb = (uint8_t)(src & 0x1F);
+
+    uint16_t r = (uint16_t)(((uint16_t)dr * (255 - alpha) + (uint16_t)sr * alpha + 127) / 255);
+    uint16_t g = (uint16_t)(((uint16_t)dg * (255 - alpha) + (uint16_t)sg * alpha + 127) / 255);
+    uint16_t b = (uint16_t)(((uint16_t)db * (255 - alpha) + (uint16_t)sb * alpha + 127) / 255);
+
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
 static int effective_bins(uint8_t view_mode, uint32_t fft_size)
 {
     return view_mode == 1 ? (int)(fft_size / 2) : (int)fft_size;
@@ -301,6 +318,8 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
                                   uint16_t filter_fill,
                                   uint16_t filter_edge)
 {
+    const uint8_t fill_alpha = 77; /* ~30% */
+
     if (filter_hz == 0 || sample_freq == 0 || marker_px < 0)
         return;
 
@@ -342,7 +361,7 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
     {
         uint16_t *row = &canvas_buf[y * disp_w];
         for (int x = left_px; x <= right_px; x++)
-            row[x] = filter_fill;
+            row[x] = blend_rgb565(row[x], filter_fill, fill_alpha);
         if (left_px >= 0 && left_px < disp_w)
             row[left_px] = filter_edge;
         if (right_px >= 0 && right_px < disp_w)

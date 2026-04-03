@@ -31,6 +31,7 @@ typedef struct
     spectrum_cfg_t cfg;
     uac_host_device_handle_t uac_handle;
     TaskHandle_t task_handle;
+    bool running;
 
     uint8_t channels;
     uint8_t bit_resolution;

@@ -1,6 +1,10 @@
 #include "app/runtime_priv.h"
+#include "app/recovery.h"
+#include "app/timing_config.h"
 
 #include <stdio.h>
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "display/display.h"
 #include "cat/service.h"
@@ -9,6 +13,36 @@
 static const char *TAG = "usb_audio_cdc_info";
 
 #define CDC_COMM_ITF_NUM 0
+#define CDC_EVT_QUEUE_LEN 8
+typedef enum
+{
+    CDC_EVT_CONNECTED = 1,
+    CDC_EVT_DISCONNECTED,
+    CDC_EVT_STOP,
+} cdc_evt_id_t;
+
+typedef struct
+{
+    cdc_evt_id_t id;
+    usbh_cdc_device_event_data_t data;
+} cdc_evt_t;
+
+static QueueHandle_t s_cdc_evt_queue;
+static TaskHandle_t s_cdc_evt_task;
+static bool s_cdc_disconnect_pending;
+static bool s_cdc_drop_logged;
+
+static bool queue_cdc_event(cdc_evt_id_t id, const usbh_cdc_device_event_data_t *event_data)
+{
+    if (!s_cdc_evt_queue)
+        return false;
+    cdc_evt_t ev = {
+        .id = id,
+    };
+    if (event_data)
+        ev.data = *event_data;
+    return xQueueSend(s_cdc_evt_queue, &ev, 0) == pdTRUE;
+}
 
 static void cat_status_callback(const cat_status_t *st, void *user_ctx)
 {
@@ -63,16 +97,25 @@ static void cdc_notif_callback(usbh_cdc_port_handle_t port,
     {
     case USB_CDC_NOTIFY_SERIAL_STATE:
     {
+        static uint32_t s_last_serial_state = 0xFFFFFFFFu;
         usb_cdc_serial_state_t *state = (usb_cdc_serial_state_t *)notif->Data;
-        ESP_LOGI(TAG, "[CDC] SerialState  DCD=%d DSR=%d RI=%d framing_err=%d",
-                 state->dcd, state->dsr, state->ring, state->framing_err);
+        uint32_t packed = (state->dcd ? 1u : 0u) |
+                          ((state->dsr ? 1u : 0u) << 1) |
+                          ((state->ring ? 1u : 0u) << 2) |
+                          ((state->framing_err ? 1u : 0u) << 3);
+        if (packed != s_last_serial_state)
+        {
+            s_last_serial_state = packed;
+            ESP_LOGD(TAG, "[CDC] SerialState DCD=%d DSR=%d RI=%d FE=%d",
+                     state->dcd, state->dsr, state->ring, state->framing_err);
+        }
         break;
     }
     case USB_CDC_NOTIFY_NETWORK_CONNECTION:
-        ESP_LOGI(TAG, "[CDC] NetworkConnection: %s", notif->wValue ? "connected" : "disconnected");
+        ESP_LOGD(TAG, "[CDC] NetworkConnection: %s", notif->wValue ? "connected" : "disconnected");
         break;
     default:
-        ESP_LOGI(TAG, "[CDC] Notification 0x%02x", notif->bNotificationCode);
+        ESP_LOGD(TAG, "[CDC] Notification 0x%02x", notif->bNotificationCode);
         break;
     }
     (void)port;
@@ -142,24 +185,42 @@ static void handle_cdc_connected(const usbh_cdc_device_event_data_t *event_data)
     usbh_cdc_port_get_intf_desc(port, &notif_intf, &data_intf);
     if (notif_intf)
     {
-        ESP_LOGI(TAG, "  CDC Control interface: %d", notif_intf->bInterfaceNumber);
+        ESP_LOGD(TAG, "  CDC Control interface: %d", notif_intf->bInterfaceNumber);
     }
     if (data_intf)
     {
-        ESP_LOGI(TAG, "  CDC Data interface:    %d", data_intf->bInterfaceNumber);
+        ESP_LOGD(TAG, "  CDC Data interface:    %d", data_intf->bInterfaceNumber);
     }
 }
 
 static void handle_cdc_disconnected(void)
 {
-    ESP_LOGI(TAG, "=== CDC device disconnected ===");
-    cat_service_stop();
-    display_set_status(DISP_MSG_DISCONNECTED);
+    TickType_t t0 = xTaskGetTickCount();
+    if (xSemaphoreTake(s_dev_mutex, pdMS_TO_TICKS(APP_DEV_MUTEX_TIMEOUT_MS)) == pdTRUE)
+    {
+        /* Mark stream dead first, then stop producers/consumers. */
+        s_cdc_port = NULL;
+        s_iq_handle = NULL;
+        s_iq_stream_started = false;
+        s_iq_start_in_progress = false;
+        xSemaphoreGive(s_dev_mutex);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "disconnect: dev_mutex timeout");
+    }
+    TickType_t t_mark = xTaskGetTickCount();
 
-    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-    s_cdc_port = NULL;
-    xSemaphoreGive(s_dev_mutex);
     app_runtime_set_stream_state(false, false, false);
+    spectrum_notify_rx(NULL);
+    cat_service_stop();
+    TickType_t t_cat = xTaskGetTickCount();
+    display_set_status(DISP_MSG_DISCONNECTED);
+    TickType_t t_ui = xTaskGetTickCount();
+    recovery_record_cdc_timing((uint32_t)((t_mark - t0) * portTICK_PERIOD_MS),
+                               (uint32_t)((t_cat - t_mark) * portTICK_PERIOD_MS),
+                               (uint32_t)((t_ui - t_cat) * portTICK_PERIOD_MS),
+                               (uint32_t)((t_ui - t0) * portTICK_PERIOD_MS));
 }
 
 static void cdc_dev_event_callback(usbh_cdc_device_event_t event,
@@ -169,10 +230,26 @@ static void cdc_dev_event_callback(usbh_cdc_device_event_t event,
     switch (event)
     {
     case CDC_HOST_DEVICE_EVENT_CONNECTED:
-        handle_cdc_connected(event_data);
+        s_cdc_disconnect_pending = false;
+        if (!queue_cdc_event(CDC_EVT_CONNECTED, event_data) && !s_cdc_drop_logged)
+        {
+            s_cdc_drop_logged = true;
+            ESP_LOGW(TAG, "drop CDC connect event (queue full)");
+        }
         break;
     case CDC_HOST_DEVICE_EVENT_DISCONNECTED:
-        handle_cdc_disconnected();
+        if (!s_cdc_disconnect_pending && recovery_on_disconnect(RECOVERY_SRC_CDC))
+        {
+            cat_service_request_stop_fast();
+            s_cdc_disconnect_pending = true;
+            if (!queue_cdc_event(CDC_EVT_DISCONNECTED, event_data) && !s_cdc_drop_logged)
+            {
+                s_cdc_disconnect_pending = false;
+                s_cdc_drop_logged = true;
+                ESP_LOGW(TAG, "drop CDC disconnect event (queue full)");
+                (void)recovery_request();
+            }
+        }
         break;
     default:
         break;
@@ -180,12 +257,47 @@ static void cdc_dev_event_callback(usbh_cdc_device_event_t event,
     (void)user_ctx;
 }
 
+static void cdc_evt_task(void *arg)
+{
+    (void)arg;
+    while (true)
+    {
+        cdc_evt_t ev;
+        if (xQueueReceive(s_cdc_evt_queue, &ev, portMAX_DELAY) != pdTRUE)
+            continue;
+
+        s_cdc_drop_logged = false;
+        if (ev.id == CDC_EVT_STOP)
+            break;
+
+        if (ev.id == CDC_EVT_CONNECTED)
+        {
+            handle_cdc_connected(&ev.data);
+        }
+        else if (ev.id == CDC_EVT_DISCONNECTED)
+        {
+            handle_cdc_disconnected();
+            (void)recovery_request();
+        }
+    }
+
+    s_cdc_evt_task = NULL;
+    vTaskDelete(NULL);
+}
+
 void app_runtime_close_cdc_port_if_open(void)
 {
-    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-    usbh_cdc_port_handle_t port_to_close = s_cdc_port;
-    s_cdc_port = NULL;
-    xSemaphoreGive(s_dev_mutex);
+    usbh_cdc_port_handle_t port_to_close = NULL;
+    if (xSemaphoreTake(s_dev_mutex, pdMS_TO_TICKS(APP_DEV_MUTEX_TIMEOUT_MS)) == pdTRUE)
+    {
+        port_to_close = s_cdc_port;
+        s_cdc_port = NULL;
+        xSemaphoreGive(s_dev_mutex);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "close_cdc_port: dev_mutex timeout");
+    }
 
     if (port_to_close != NULL)
     {
@@ -195,6 +307,22 @@ void app_runtime_close_cdc_port_if_open(void)
 
 void app_runtime_cdc_install_driver(void)
 {
+    s_cdc_evt_queue = xQueueCreate(CDC_EVT_QUEUE_LEN, sizeof(cdc_evt_t));
+    if (!s_cdc_evt_queue)
+    {
+        ESP_LOGE(TAG, "failed to create CDC event queue");
+        abort();
+    }
+    BaseType_t ok = xTaskCreate(cdc_evt_task, "cdc_evt", 4096, NULL,
+                                s_uac_task_priority - 1, &s_cdc_evt_task);
+    if (ok != pdTRUE)
+    {
+        vQueueDelete(s_cdc_evt_queue);
+        s_cdc_evt_queue = NULL;
+        ESP_LOGE(TAG, "failed to create CDC event task");
+        abort();
+    }
+
     const usbh_cdc_driver_config_t cdc_config = {
         .task_stack_size = 4096,
         .task_priority = s_uac_task_priority,
@@ -209,5 +337,52 @@ void app_runtime_cdc_install_driver(void)
 
 void app_runtime_cdc_uninstall_driver(void)
 {
-    ESP_ERROR_CHECK(usbh_cdc_driver_uninstall());
+    if (s_cdc_evt_queue)
+    {
+        (void)queue_cdc_event(CDC_EVT_STOP, NULL);
+    }
+    for (int i = 0; i < (int)APP_TASK_STOP_MAX_POLLS && s_cdc_evt_task != NULL; i++)
+    {
+        vTaskDelay(pdMS_TO_TICKS(APP_TASK_STOP_POLL_MS));
+    }
+    if (s_cdc_evt_task)
+    {
+        vTaskDelete(s_cdc_evt_task);
+        s_cdc_evt_task = NULL;
+    }
+    if (s_cdc_evt_queue)
+    {
+        vQueueDelete(s_cdc_evt_queue);
+        s_cdc_evt_queue = NULL;
+    }
+    s_cdc_disconnect_pending = false;
+    s_cdc_drop_logged = false;
+
+    esp_err_t err = ESP_OK;
+    uint32_t attempts = 0;
+    for (; attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS; attempts++)
+    {
+        err = usbh_cdc_driver_uninstall();
+        if (err == ESP_OK)
+        {
+            break;
+        }
+        if (err != ESP_ERR_INVALID_STATE)
+        {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(APP_USB_UNINSTALL_RETRY_DELAY_MS));
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "usbh_cdc_driver_uninstall: %s (attempts=%lu)",
+                 esp_err_to_name(err),
+                 (unsigned long)(attempts + 1));
+    }
+    else if (attempts > 0)
+    {
+        ESP_LOGI(TAG, "usbh_cdc_driver_uninstall recovered after %lu retries",
+                 (unsigned long)attempts);
+    }
 }

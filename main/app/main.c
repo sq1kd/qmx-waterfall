@@ -16,6 +16,8 @@
 #include "display/display.h"
 #include "serial/cli.h"
 #include "app/runtime.h"
+#include "app/recovery.h"
+#include "app/timing_config.h"
 
 #define HOST_LIB_TASK_PRIORITY 2
 #define UAC_TASK_PRIORITY 3
@@ -25,10 +27,21 @@ static const char *TAG = "usb_audio_cdc_info";
 
 static QueueHandle_t s_app_queue;
 static SemaphoreHandle_t s_dev_mutex;
+static volatile bool s_usb_lib_stop_requested;
+
+static void usb_lib_task(void *arg);
+
+static void configure_prod_log_levels(void)
+{
+    esp_log_level_set("USB HOST", ESP_LOG_NONE);
+    esp_log_level_set("uac-host", ESP_LOG_INFO);
+    esp_log_level_set("USBH_CDC", ESP_LOG_ERROR);
+    esp_log_level_set("cdc_descriptor", ESP_LOG_WARN);
+}
 
 static void gpio_cb(void *arg)
 {
-    const uint8_t quit = 1;
+    const app_evt_t quit = APP_EVT_QUIT;
     BaseType_t xTaskWoken = pdFALSE;
     xQueueSendFromISR(s_app_queue, &quit, &xTaskWoken);
     if (xTaskWoken == pdTRUE)
@@ -36,6 +49,75 @@ static void gpio_cb(void *arg)
         portYIELD_FROM_ISR();
     }
     (void)arg;
+}
+
+static void start_usb_host_task(TaskHandle_t *usb_lib_task_hdl)
+{
+    s_usb_lib_stop_requested = false;
+    BaseType_t ret = xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096,
+                                             xTaskGetCurrentTaskHandle(),
+                                             HOST_LIB_TASK_PRIORITY,
+                                             usb_lib_task_hdl, 0);
+    assert(ret == pdTRUE);
+    ulTaskNotifyTake(false, portMAX_DELAY);
+}
+
+static void stop_usb_host_task(TaskHandle_t *usb_lib_task_hdl)
+{
+    if (!usb_lib_task_hdl || !*usb_lib_task_hdl)
+        return;
+
+    app_runtime_shutdown_clients();
+
+    s_usb_lib_stop_requested = true;
+    esp_err_t unblk = usb_host_lib_unblock();
+    if (unblk != ESP_OK && unblk != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "usb_host_lib_unblock: %s", esp_err_to_name(unblk));
+    }
+
+    /* Wait for usb_lib task to stop event loop and notify; force delete on timeout. */
+    if (ulTaskNotifyTake(false, pdMS_TO_TICKS(APP_USB_LIB_STOP_WAIT_MS)) == 0)
+    {
+        ESP_LOGW(TAG, "usb_lib task did not finish in time; forcing delete");
+    }
+    vTaskDelete(*usb_lib_task_hdl);
+    *usb_lib_task_hdl = NULL;
+
+    esp_err_t free_ret = usb_host_device_free_all();
+    if (free_ret != ESP_OK && free_ret != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "usb_host_device_free_all: %s", esp_err_to_name(free_ret));
+    }
+
+    ESP_LOGI(TAG, "No more clients, uninstalling USB Host Library");
+    esp_err_t uninstall_err = ESP_OK;
+    uint32_t uninstall_attempts = 0;
+    for (; uninstall_attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS; uninstall_attempts++)
+    {
+        uninstall_err = usb_host_uninstall();
+        if (uninstall_err == ESP_OK)
+        {
+            break;
+        }
+        if (uninstall_err != ESP_ERR_INVALID_STATE)
+        {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(APP_USB_UNINSTALL_RETRY_DELAY_MS));
+    }
+
+    if (uninstall_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "usb_host_uninstall: %s (attempts=%lu)",
+                 esp_err_to_name(uninstall_err),
+                 (unsigned long)(uninstall_attempts + 1));
+    }
+    else if (uninstall_attempts > 0)
+    {
+        ESP_LOGI(TAG, "usb_host_uninstall recovered after %lu retries",
+                 (unsigned long)uninstall_attempts);
+    }
 }
 
 static void usb_lib_task(void *arg)
@@ -49,46 +131,42 @@ static void usb_lib_task(void *arg)
     ESP_ERROR_CHECK(usb_host_install(&host_config));
     xTaskNotifyGive(arg);
 
-    bool has_clients = true;
-    bool has_devices = false;
-    while (has_clients)
+    while (!s_usb_lib_stop_requested)
     {
         uint32_t event_flags;
-        ESP_ERROR_CHECK(usb_host_lib_handle_events(portMAX_DELAY, &event_flags));
-        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS)
+        esp_err_t err = usb_host_lib_handle_events(pdMS_TO_TICKS(APP_USB_LIB_EVENT_TIMEOUT_MS), &event_flags);
+        if (err == ESP_ERR_TIMEOUT)
         {
-            if (ESP_OK == usb_host_device_free_all())
-            {
-                has_clients = false;
-            }
-            else
-            {
-                has_devices = true;
-            }
+            continue;
         }
-        if (has_devices && (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE))
+        if (err != ESP_OK)
         {
-            has_clients = false;
+            if (!s_usb_lib_stop_requested)
+            {
+                ESP_LOGW(TAG, "usb_host_lib_handle_events: %s", esp_err_to_name(err));
+            }
+            continue;
         }
     }
-    ESP_LOGI(TAG, "No more clients, uninstalling USB Host Library");
-    ESP_ERROR_CHECK(usb_host_uninstall());
+
     xTaskNotifyGive(arg);
     vTaskSuspend(NULL);
 }
 
 void app_main(void)
 {
+    configure_prod_log_levels();
     ESP_LOGI(TAG, "USB audio + CDC device info example");
 
     display_init();
 
     s_dev_mutex = xSemaphoreCreateMutex();
     assert(s_dev_mutex);
-    s_app_queue = xQueueCreate(4, sizeof(uint8_t));
+    s_app_queue = xQueueCreate(8, sizeof(app_evt_t));
     assert(s_app_queue);
 
     app_runtime_init(s_dev_mutex, UAC_TASK_PRIORITY);
+    recovery_init(s_app_queue);
 
     const gpio_config_t input_pin = {
         .pin_bit_mask = BIT64(APP_QUIT_PIN),
@@ -100,15 +178,8 @@ void app_main(void)
     ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LOWMED));
     ESP_ERROR_CHECK(gpio_isr_handler_add(APP_QUIT_PIN, gpio_cb, NULL));
 
-    TaskHandle_t usb_lib_task_hdl;
-    BaseType_t ret = xTaskCreatePinnedToCore(usb_lib_task, "usb_lib", 4096,
-                                             xTaskGetCurrentTaskHandle(),
-                                             HOST_LIB_TASK_PRIORITY,
-                                             &usb_lib_task_hdl, 0);
-    assert(ret == pdTRUE);
-
-    ulTaskNotifyTake(false, portMAX_DELAY);
-
+    TaskHandle_t usb_lib_task_hdl = NULL;
+    start_usb_host_task(&usb_lib_task_hdl);
     app_runtime_install_usb_clients();
 
     ESP_LOGI(TAG, "Drivers installed. Connect device. Press BOOT (GPIO %d) to quit.",
@@ -116,14 +187,58 @@ void app_main(void)
 
     serial_cli_start();
 
-    uint8_t quit;
-    xQueueReceive(s_app_queue, &quit, portMAX_DELAY);
-    ESP_LOGI(TAG, "Shutting down...");
+    bool running = true;
+    while (running)
+    {
+        app_evt_t ev;
+        xQueueReceive(s_app_queue, &ev, portMAX_DELAY);
 
-    app_runtime_shutdown_clients();
+        if (ev == APP_EVT_RECOVERY_START)
+        {
+            uint32_t cycle_id = recovery_get_cycle_id();
+            uint32_t backoff_ms = recovery_get_backoff_ms();
+            TickType_t t0 = xTaskGetTickCount();
+            ESP_LOGI(TAG, "USB recover start cycle=%lu backoff=%lums",
+                     (unsigned long)cycle_id,
+                     (unsigned long)backoff_ms);
+            if (backoff_ms > 0)
+            {
+                vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            }
+            stop_usb_host_task(&usb_lib_task_hdl);
+            TickType_t t_down = xTaskGetTickCount();
+            start_usb_host_task(&usb_lib_task_hdl);
+            TickType_t t_host = xTaskGetTickCount();
+            app_runtime_install_usb_clients();
+            TickType_t t_up = xTaskGetTickCount();
+            recovery_record_recovery_timing((uint32_t)((t_down - t0) * portTICK_PERIOD_MS),
+                                            (uint32_t)((t_host - t_down) * portTICK_PERIOD_MS),
+                                            (uint32_t)((t_up - t_host) * portTICK_PERIOD_MS),
+                                            (uint32_t)((t_up - t0) * portTICK_PERIOD_MS));
+            ESP_LOGI(TAG, "USB recover done cycle=%lu", (unsigned long)cycle_id);
+            recovery_mark_done();
+            continue;
+        }
 
-    ulTaskNotifyTake(false, portMAX_DELAY);
-    vTaskDelete(usb_lib_task_hdl);
+        if (ev == APP_EVT_RECOVERY_DONE)
+        {
+            continue;
+        }
+
+        if (ev == APP_EVT_RECOVERY_TIMEOUT)
+        {
+            ESP_LOGE(TAG, "Recovery timeout event");
+            continue;
+        }
+
+        if (ev == APP_EVT_QUIT)
+        {
+            ESP_LOGI(TAG, "Shutting down...");
+            running = false;
+        }
+    }
+
+    stop_usb_host_task(&usb_lib_task_hdl);
 
     gpio_isr_handler_remove(APP_QUIT_PIN);
     vQueueDelete(s_app_queue);

@@ -51,6 +51,7 @@ static const char *TAG = "display";
 
 static lv_display_t *s_disp = NULL;
 static lv_obj_t *s_label = NULL;
+static lv_obj_t *s_canvas = NULL;
 
 void display_init(void)
 {
@@ -217,8 +218,33 @@ lv_obj_t *display_show_spectrum(void)
         canvas = lv_canvas_create(scr);
         lv_obj_set_size(canvas, DISP_LOGICAL_W, DISP_LOGICAL_H);
         lv_obj_align(canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+        s_canvas = canvas;
 
         lvgl_port_unlock();
     }
     return canvas;
+}
+
+void display_show_status(const char *msg)
+{
+    if (!s_disp || !s_label)
+        return;
+
+    if (lvgl_port_lock(0))
+    {
+        lv_obj_t *scr = lv_display_get_screen_active(s_disp);
+
+        if (s_canvas)
+        {
+            lv_obj_del(s_canvas);
+            s_canvas = NULL;
+        }
+
+        lv_obj_clear_flag(s_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+        lv_label_set_text(s_label, msg ? msg : DISP_MSG_DISCONNECTED);
+        lv_obj_align(s_label, LV_ALIGN_CENTER, 0, 0);
+
+        lvgl_port_unlock();
+    }
 }

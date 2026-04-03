@@ -9,6 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "freertos/semphr.h"
 
 #include "spectrum/dsp.h"
 #include "spectrum/freq_map.h"
@@ -17,6 +18,62 @@
 static const char *TAG = "spectrum";
 
 spectrum_state_t s;
+
+typedef enum
+{
+    SPEC_ST_STOPPED = 0,
+    SPEC_ST_STARTING,
+    SPEC_ST_RUNNING,
+    SPEC_ST_STOPPING,
+} spectrum_lifecycle_t;
+
+static SemaphoreHandle_t s_lifecycle_mutex;
+static spectrum_lifecycle_t s_lifecycle = SPEC_ST_STOPPED;
+static uint32_t s_init_failures;
+
+static bool spectrum_lock(TickType_t timeout)
+{
+    if (s_lifecycle_mutex == NULL)
+    {
+        s_lifecycle_mutex = xSemaphoreCreateMutex();
+        if (s_lifecycle_mutex == NULL)
+            return false;
+    }
+    return xSemaphoreTake(s_lifecycle_mutex, timeout) == pdTRUE;
+}
+
+static void spectrum_unlock(void)
+{
+    if (s_lifecycle_mutex)
+        xSemaphoreGive(s_lifecycle_mutex);
+}
+
+static void spectrum_cleanup_state(spectrum_state_t *st)
+{
+    if (st->dsp_initialized)
+    {
+        dsps_fft2r_deinit_fc32();
+        st->dsp_initialized = false;
+    }
+
+    free(st->window);
+    free(st->fft_buf);
+    free(st->wf_db);
+    free(st->spec_ema_db);
+    free(st->canvas_buf);
+
+    memset(st, 0, sizeof(*st));
+}
+
+static void spectrum_mark_init_failed(void)
+{
+    if (spectrum_lock(portMAX_DELAY))
+    {
+        s_lifecycle = SPEC_ST_STOPPED;
+        s_init_failures++;
+        spectrum_unlock();
+    }
+}
 
 void spectrum_update_marker_px(void)
 {
@@ -224,9 +281,30 @@ void spectrum_get_runtime(float *level_offset_db,
 
 esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
 {
+    if (!spectrum_lock(portMAX_DELAY))
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (s_lifecycle == SPEC_ST_RUNNING)
+    {
+        spectrum_unlock();
+        ESP_LOGI(TAG, "spectrum already running");
+        return ESP_OK;
+    }
+    if (s_lifecycle != SPEC_ST_STOPPED)
+    {
+        spectrum_unlock();
+        ESP_LOGW(TAG, "spectrum start blocked, state=%d", (int)s_lifecycle);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_lifecycle = SPEC_ST_STARTING;
+    spectrum_unlock();
+
     memset(&s, 0, sizeof(s));
     s.canvas = canvas;
     s.cfg = *cfg;
+    s.running = true;
 
     s.channels = 2;
     s.bit_resolution = 24;
@@ -250,6 +328,7 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (!s.canvas_buf)
     {
         ESP_LOGE(TAG, "canvas_buf alloc failed (%u bytes)", (unsigned)buf_bytes);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
     memset(s.canvas_buf, 0, buf_bytes);
@@ -265,7 +344,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (!s.fft_buf)
     {
         ESP_LOGE(TAG, "fft_buf alloc failed");
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
     memset(s.fft_buf, 0, fft_bytes);
@@ -274,8 +354,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (!s.window)
     {
         ESP_LOGE(TAG, "window alloc failed");
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
     spectrum_build_hann_window(s.window, (int)cfg->fft_size);
@@ -283,16 +363,15 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0)
     {
         ESP_LOGE(TAG, "PSRAM not initialized; wf_db requires SPIRAM");
-        free(s.window);
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
 
     const size_t wf_bytes = (size_t)WF_STORE_H * DISP_W * sizeof(float);
     size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    ESP_LOGI(TAG, "PSRAM before wf_db alloc: free=%u largest=%u", (unsigned)psram_free, (unsigned)psram_largest);
+    ESP_LOGD(TAG, "PSRAM before wf_db alloc: free=%u largest=%u", (unsigned)psram_free, (unsigned)psram_largest);
 
     s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s.wf_db)
@@ -301,9 +380,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
                  (unsigned)wf_bytes,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-        free(s.window);
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
     for (int i = 0; i < WF_STORE_H * DISP_W; i++)
@@ -314,10 +392,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (!s.spec_ema_db)
     {
         ESP_LOGE(TAG, "spec_ema_db alloc failed");
-        free(s.wf_db);
-        free(s.window);
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
     for (int i = 0; i < DISP_W; i++)
@@ -327,11 +403,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "dsps_fft2r_init_fc32 failed: %s", esp_err_to_name(ret));
-        free(s.spec_ema_db);
-        free(s.wf_db);
-        free(s.window);
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ret;
     }
     s.dsp_initialized = true;
@@ -342,15 +415,18 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     if (ok != pdTRUE)
     {
         ESP_LOGE(TAG, "Failed to create spectrum task");
-        free(s.spec_ema_db);
-        free(s.wf_db);
-        free(s.window);
-        free(s.fft_buf);
-        free(s.canvas_buf);
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Spectrum init OK — FFT %u, %.1f fps, wf %dx%d (%.1f KB)",
+    if (spectrum_lock(portMAX_DELAY))
+    {
+        s_lifecycle = SPEC_ST_RUNNING;
+        spectrum_unlock();
+    }
+
+    ESP_LOGD(TAG, "Spectrum init OK — FFT %u, %.1f fps, wf %dx%d (%.1f KB)",
              cfg->fft_size, cfg->lines_per_sec, DISP_W, WF_DISP_H,
              (float)wf_bytes / 1024.0f);
     return ESP_OK;
@@ -367,35 +443,71 @@ void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution, uint32
 
 void spectrum_notify_rx(uac_host_device_handle_t handle)
 {
+    if (!spectrum_lock(pdMS_TO_TICKS(10)))
+        return;
+
+    if (s_lifecycle != SPEC_ST_RUNNING)
+    {
+        spectrum_unlock();
+        return;
+    }
+
     s.uac_handle = handle;
-    if (s.task_handle)
-        xTaskNotifyGive(s.task_handle);
+    TaskHandle_t h = s.task_handle;
+    spectrum_unlock();
+
+    if (h)
+        xTaskNotifyGive(h);
 }
 
 void spectrum_stop(void)
 {
+    if (!spectrum_lock(portMAX_DELAY))
+        return;
+
+    if (s_lifecycle == SPEC_ST_STOPPED)
+    {
+        spectrum_unlock();
+        return;
+    }
+
+    s_lifecycle = SPEC_ST_STOPPING;
+    s.running = false;
     s.uac_handle = NULL;
-    if (s.task_handle)
+    TaskHandle_t task = s.task_handle;
+    spectrum_unlock();
+
+    if (task)
     {
-        vTaskDelete(s.task_handle);
-        s.task_handle = NULL;
-    }
-    if (s.dsp_initialized)
-    {
-        dsps_fft2r_deinit_fc32();
-    }
-    free(s.window);
-    free(s.fft_buf);
-    free(s.wf_db);
-    free(s.spec_ema_db);
-    if (s.canvas_buf && s.canvas)
-    {
-        if (lvgl_port_lock(0))
+        xTaskNotifyGive(task);
+        for (int i = 0; i < 30 && s.task_handle != NULL; i++)
+            vTaskDelay(pdMS_TO_TICKS(10));
+        if (s.task_handle)
         {
-            lv_canvas_set_buffer(s.canvas, NULL, 0, 0, LV_COLOR_FORMAT_RGB565);
-            lvgl_port_unlock();
+            vTaskDelete(s.task_handle);
+            s.task_handle = NULL;
         }
     }
-    free(s.canvas_buf);
-    memset(&s, 0, sizeof(s));
+
+    if (!spectrum_lock(portMAX_DELAY))
+        return;
+    spectrum_cleanup_state(&s);
+    s_lifecycle = SPEC_ST_STOPPED;
+    spectrum_unlock();
+
+    if (s_init_failures > 0)
+    {
+        ESP_LOGW(TAG, "spectrum stopped (init failures=%lu)", (unsigned long)s_init_failures);
+        s_init_failures = 0;
+    }
+}
+
+bool spectrum_is_running(void)
+{
+    bool running = false;
+    if (!spectrum_lock(pdMS_TO_TICKS(10)))
+        return false;
+    running = (s_lifecycle == SPEC_ST_RUNNING);
+    spectrum_unlock();
+    return running;
 }

@@ -1,8 +1,13 @@
 #include "app/runtime.h"
 
 #include <string.h>
+#include "esp_log.h"
 #include "app/runtime_priv.h"
 #include "cat/service.h"
+#include "spectrum/spectrum.h"
+#include "display/display.h"
+
+static const char *TAG = "runtime";
 
 SemaphoreHandle_t s_dev_mutex;
 int s_uac_task_priority;
@@ -45,9 +50,33 @@ void app_runtime_install_usb_clients(void)
 
 void app_runtime_shutdown_clients(void)
 {
+    TickType_t t0 = xTaskGetTickCount();
+    spectrum_stop();
+    TickType_t t1 = xTaskGetTickCount();
+    app_runtime_set_stream_state(false, false, false);
     app_runtime_close_all_uac_handles();
+    TickType_t t2 = xTaskGetTickCount();
     cat_service_stop();
+    TickType_t t3 = xTaskGetTickCount();
     app_runtime_uac_uninstall_driver();
+    if (spectrum_is_running())
+    {
+        ESP_LOGW(TAG, "invariant: spectrum still running after uac_uninstall");
+    }
+    TickType_t t4 = xTaskGetTickCount();
     app_runtime_close_cdc_port_if_open();
     app_runtime_cdc_uninstall_driver();
+    TickType_t t5 = xTaskGetTickCount();
+    display_show_status(DISP_MSG_DISCONNECTED);
+    TickType_t t6 = xTaskGetTickCount();
+
+    ESP_LOGI(TAG,
+             "shutdown timings ms: spectrum=%lu uac_close=%lu cat=%lu uac_uninst=%lu cdc=%lu ui=%lu total=%lu",
+             (unsigned long)((t1 - t0) * portTICK_PERIOD_MS),
+             (unsigned long)((t2 - t1) * portTICK_PERIOD_MS),
+             (unsigned long)((t3 - t2) * portTICK_PERIOD_MS),
+             (unsigned long)((t4 - t3) * portTICK_PERIOD_MS),
+             (unsigned long)((t5 - t4) * portTICK_PERIOD_MS),
+             (unsigned long)((t6 - t5) * portTICK_PERIOD_MS),
+             (unsigned long)((t6 - t0) * portTICK_PERIOD_MS));
 }

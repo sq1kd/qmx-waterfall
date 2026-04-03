@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "cat/proto.h"
 #include "cat/state.h"
+#include "app/timing_config.h"
 
 #define CAT_TASK_STACK 4096
 #define CAT_TASK_PRIO 2
@@ -20,6 +21,8 @@
 #define CAT_BACKOFF_MIN_MS 500
 #define CAT_BACKOFF_MAX_MS 4000
 #define CAT_MAX_RECOVERY 5
+#define CAT_CONNECT_WARMUP_MS 700
+#define CAT_MIN_TX_SPACING_MS 150
 
 typedef struct
 {
@@ -73,9 +76,11 @@ static struct
     bool poll_filter_due;
     TickType_t poll_filter_due_at;
     TickType_t last_status_log;
+    TickType_t warmup_until;
+    TickType_t next_tx_allowed_at;
 } s;
 
-#define CAT_POLL_GAP_MS 80
+#define CAT_POLL_GAP_MS 250
 
 const char *cat_state_to_str(cat_state_t st)
 {
@@ -106,7 +111,14 @@ static void set_state(cat_state_t st)
     xSemaphoreGive(s.lock);
     if (changed)
     {
-        ESP_LOGI(TAG, "state -> %s", cat_state_name(st));
+        if (st == CAT_ST_DEGRADED || st == CAT_ST_FAULT)
+        {
+            ESP_LOGW(TAG, "state -> %s", cat_state_name(st));
+        }
+        else
+        {
+            ESP_LOGD(TAG, "state -> %s", cat_state_name(st));
+        }
         notify_status();
     }
 }
@@ -146,11 +158,17 @@ static void bump_rx_frame(void)
     xSemaphoreGive(s.lock);
 }
 
-static void send_cmd(cat_cmd_id_t id, const char *cmd, uint32_t timeout_ms)
+static bool cat_tx_with_spacing(const char *cmd)
 {
     if (!s.port || !cmd)
     {
-        return;
+        return false;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if (now < s.next_tx_allowed_at)
+    {
+        return false;
     }
 
     size_t len = strlen(cmd);
@@ -158,6 +176,17 @@ static void send_cmd(cat_cmd_id_t id, const char *cmd, uint32_t timeout_ms)
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "write '%s' failed: %s", cmd, esp_err_to_name(err));
+        return false;
+    }
+
+    s.next_tx_allowed_at = now + pdMS_TO_TICKS(CAT_MIN_TX_SPACING_MS);
+    return true;
+}
+
+static void send_cmd(cat_cmd_id_t id, const char *cmd, uint32_t timeout_ms)
+{
+    if (!cat_tx_with_spacing(cmd))
+    {
         return;
     }
 
@@ -170,24 +199,17 @@ static void send_cmd(cat_cmd_id_t id, const char *cmd, uint32_t timeout_ms)
     ESP_LOGD(TAG, "TX: %s", cmd);
 }
 
-static void send_cmd_no_wait(cat_cmd_id_t id, const char *cmd)
+static bool send_cmd_no_wait(cat_cmd_id_t id, const char *cmd)
 {
-    if (!s.port || !cmd)
+    if (!cat_tx_with_spacing(cmd))
     {
-        return;
-    }
-
-    size_t len = strlen(cmd);
-    esp_err_t err = usbh_cdc_write_bytes(s.port, (const uint8_t *)cmd, len, pdMS_TO_TICKS(500));
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "write '%s' failed: %s", cmd, esp_err_to_name(err));
-        return;
+        return false;
     }
 
     bump_tx();
     ESP_LOGD(TAG, "TX: %s", cmd);
     (void)id;
+    return true;
 }
 
 static void set_iq_status(bool enabled)
@@ -453,6 +475,10 @@ static void try_state_progress(void)
     }
 
     TickType_t now = xTaskGetTickCount();
+    if (now < s.warmup_until)
+    {
+        return;
+    }
     if ((s.status.state == CAT_ST_DEGRADED || s.status.state == CAT_ST_FAULT) && now < s.backoff_until)
     {
         return;
@@ -503,8 +529,10 @@ static void try_state_progress(void)
         break;
 
     case CAT_ST_IQ_ENABLING:
-        send_cmd_no_wait(CAT_CMD_SET_IQ_ON, "Q91;");
-        set_state(CAT_ST_IQ_VERIFY);
+        if (send_cmd_no_wait(CAT_CMD_SET_IQ_ON, "Q91;"))
+        {
+            set_state(CAT_ST_IQ_VERIFY);
+        }
         break;
 
     case CAT_ST_IQ_VERIFY:
@@ -564,7 +592,7 @@ static void cat_task(void *arg)
             xSemaphoreTake(s.lock, portMAX_DELAY);
             st = s.status;
             xSemaphoreGive(s.lock);
-            ESP_LOGI(TAG, "status state=%s iq=%d mode=%s filter=%s rit=%ld(%d) to=%lu rt=%lu",
+            ESP_LOGD(TAG, "status state=%s iq=%d mode=%s filter=%s rit=%ld(%d) to=%lu rt=%lu",
                      cat_state_name(st.state),
                      st.iq_enabled ? 1 : 0,
                      st.mode[0] ? st.mode : "?",
@@ -633,6 +661,8 @@ esp_err_t cat_service_start(usbh_cdc_port_handle_t port, const cat_service_confi
     s.poll_filter_due = false;
     s.poll_filter_due_at = 0;
     s.last_status_log = xTaskGetTickCount();
+    s.warmup_until = xTaskGetTickCount() + pdMS_TO_TICKS(CAT_CONNECT_WARMUP_MS);
+    s.next_tx_allowed_at = xTaskGetTickCount();
 
     BaseType_t ok = xTaskCreate(cat_task, "cat_svc", CAT_TASK_STACK, NULL, CAT_TASK_PRIO, &s.task);
     if (ok != pdTRUE)
@@ -660,9 +690,9 @@ void cat_service_stop(void)
     TaskHandle_t h = s.task;
     if (h)
     {
-        for (int i = 0; i < 50 && s.task != NULL; i++)
+        for (int i = 0; i < (int)APP_TASK_STOP_MAX_POLLS && s.task != NULL; i++)
         {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(APP_TASK_STOP_POLL_MS));
         }
     }
 
@@ -681,6 +711,23 @@ void cat_service_stop(void)
     }
     memset(&s, 0, sizeof(s));
     ESP_LOGI(TAG, "stopped");
+}
+
+void cat_service_request_stop_fast(void)
+{
+    if (!s.running)
+    {
+        return;
+    }
+
+    /* Immediately stop new TX from other tasks/callback paths. */
+    s.port = NULL;
+    s.pending.active = false;
+    s.pending.id = CAT_CMD_NONE;
+    s.pending.tx[0] = '\0';
+    s.pending.sent_at = 0;
+    s.pending.timeout_ms = 0;
+    s.pending.retry = 0;
 }
 
 void cat_service_on_rx_bytes(const uint8_t *data, size_t len)

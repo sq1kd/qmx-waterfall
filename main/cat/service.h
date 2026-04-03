@@ -53,6 +53,9 @@ void cat_service_default_config(cat_service_config_t *cfg);
 esp_err_t cat_service_start(usbh_cdc_port_handle_t port, const cat_service_config_t *cfg);
 void cat_service_stop(void);
 
+/* Fast non-blocking stop hint for disconnect callbacks. */
+void cat_service_request_stop_fast(void);
+
 /* Push raw bytes from CDC recv callback into CAT service. */
 void cat_service_on_rx_bytes(const uint8_t *data, size_t len);
 

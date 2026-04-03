@@ -1,9 +1,9 @@
 ## IDF Component Manager Manifest File
 dependencies:
   espressif/usb:
-    version: "^1.3.0"
+    path: "../vendor/esp-usb/host/usb"
   espressif/usb_host_uac:
-    version: ">=1.0.0"
+    path: "../vendor/esp-usb/host/class/uac/usb_host_uac"
   espressif/iot_usbh_cdc:
     version: "^3.0.0"
   lvgl/lvgl:
@@ -11,4 +11,4 @@ dependencies:
   espressif/esp_lvgl_port:
     version: "^2.0.0"
   espressif/esp-dsp:
-    version: ">=0.3.0"
+    version: "^1.7.1"

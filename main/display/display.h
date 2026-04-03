@@ -34,3 +34,6 @@ void display_set_status(const char *msg);
  * Returns NULL on failure.
  */
 lv_obj_t *display_show_spectrum(void);
+
+/* Switch back to centered status mode and hide spectrum canvas. */
+void display_show_status(const char *msg);
