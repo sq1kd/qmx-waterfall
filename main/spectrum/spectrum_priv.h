@@ -16,7 +16,9 @@
 
 /* Layout: spectrum line plot on top, waterfall below */
 #define SPEC_H 25
-#define WF_H 51
+#define WF_DISP_H 51
+#define WF_CONDENSE_MAX_X100 300
+#define WF_STORE_H ((WF_DISP_H * WF_CONDENSE_MAX_X100 + 99) / 100)
 #define WF_Y0 SPEC_H
 
 /* Read buffer: enough for ~20 ms of 24-bit stereo @ 48 kHz */
@@ -62,6 +64,9 @@ typedef struct
     float wf_gamma;
     uint8_t wf_gamma_lut[256];
     uint8_t wf_palette;
+    float wf_condense;
+    float wf_temporal_beta;
+    bool wf_bilinear;
     uint8_t view_mode;
 } spectrum_state_t;
 

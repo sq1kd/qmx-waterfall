@@ -52,7 +52,10 @@ void spectrum_get_runtime(float *level_offset_db,
                           uint16_t *cw_pitch_hz,
                           float *wf_gamma,
                           uint8_t *wf_palette,
-                          float *spec_alpha);
+                          float *spec_alpha,
+                          float *wf_condense,
+                          float *wf_temporal_beta,
+                          bool *wf_bilinear);
 
 /* Apply display level offset before mapping to colors. */
 void spectrum_set_level_offset_db(float offset_db);
@@ -66,6 +69,9 @@ void spectrum_set_wf_range(float floor_db, float ceil_db);
 /* Waterfall rendering tuning: gamma and palette (0..5). */
 void spectrum_set_wf_gamma(float gamma);
 void spectrum_set_wf_palette(uint8_t palette);
+void spectrum_set_wf_condense(float factor);
+void spectrum_set_wf_temporal_beta(float beta);
+void spectrum_set_wf_bilinear(bool enabled);
 
 /* Spectrum trace EMA alpha (Python avg_alpha style), range (0,1]. */
 void spectrum_set_spec_alpha(float alpha);

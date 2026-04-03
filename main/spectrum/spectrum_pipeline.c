@@ -97,7 +97,7 @@ void spectrum_pipeline_task(void *arg)
                         render_bins = (int)(fft_size / 2);
                     }
 
-                    spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_H, DISP_W,
+                    spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_STORE_H, DISP_W,
                                           render_mag, render_bins, s.level_offset_db);
 
                     for (int px = 0; px < DISP_W; px++)
@@ -126,8 +126,12 @@ void spectrum_pipeline_task(void *arg)
                                                         s.wf_db_floor, s.wf_db_ceil,
                                                         SPEC_BG, SPEC_FG);
 
-                        spectrum_draw_waterfall(s.canvas_buf, DISP_W, WF_H, WF_Y0,
+                        spectrum_draw_waterfall(s.canvas_buf, DISP_W, WF_DISP_H, WF_Y0,
                                                 s.wf_db, s.wf_write_idx,
+                                                WF_STORE_H,
+                                                s.wf_condense,
+                                                s.wf_temporal_beta,
+                                                s.wf_bilinear ? 1 : 0,
                                                 s.wf_db_floor, s.wf_db_ceil,
                                                 s.wf_gamma_lut, s.wf_palette);
 

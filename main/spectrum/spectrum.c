@@ -149,6 +149,33 @@ void spectrum_set_wf_palette(uint8_t palette)
     ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
 }
 
+void spectrum_set_wf_condense(float factor)
+{
+    const float max_condense = (float)WF_CONDENSE_MAX_X100 / 100.0f;
+    if (factor < 1.0f)
+        factor = 1.0f;
+    if (factor > max_condense)
+        factor = max_condense;
+    s.wf_condense = factor;
+    ESP_LOGI(TAG, "[sp] wfcondense=%.2f", factor);
+}
+
+void spectrum_set_wf_temporal_beta(float beta)
+{
+    if (beta < 0.0f)
+        beta = 0.0f;
+    if (beta > 0.5f)
+        beta = 0.5f;
+    s.wf_temporal_beta = beta;
+    ESP_LOGI(TAG, "[sp] wfbeta=%.2f", beta);
+}
+
+void spectrum_set_wf_bilinear(bool enabled)
+{
+    s.wf_bilinear = enabled;
+    ESP_LOGI(TAG, "[sp] wfbilinear=%u", enabled ? 1 : 0);
+}
+
 void spectrum_set_spec_alpha(float alpha)
 {
     if (alpha <= 0.0f)
@@ -166,7 +193,10 @@ void spectrum_get_runtime(float *level_offset_db,
                           uint16_t *cw_pitch_hz,
                           float *wf_gamma,
                           uint8_t *wf_palette,
-                          float *spec_alpha)
+                          float *spec_alpha,
+                          float *wf_condense,
+                          float *wf_temporal_beta,
+                          bool *wf_bilinear)
 {
     if (level_offset_db)
         *level_offset_db = s.level_offset_db;
@@ -184,6 +214,12 @@ void spectrum_get_runtime(float *level_offset_db,
         *wf_palette = s.wf_palette;
     if (spec_alpha)
         *spec_alpha = s.spec_alpha;
+    if (wf_condense)
+        *wf_condense = s.wf_condense;
+    if (wf_temporal_beta)
+        *wf_temporal_beta = s.wf_temporal_beta;
+    if (wf_bilinear)
+        *wf_bilinear = s.wf_bilinear;
 }
 
 esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
@@ -200,7 +236,10 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     s.wf_db_floor = -140.0f;
     s.wf_db_ceil = 10.0f;
     s.wf_gamma = 1.0f;
-    s.wf_palette = 0;
+    s.wf_palette = 4;
+    s.wf_condense = 2.0f;
+    s.wf_temporal_beta = 0.0f;
+    s.wf_bilinear = true;
     s.spec_alpha = 0.25f;
     s.view_mode = 0;
     s.cw_pitch_hz = 700;
@@ -241,17 +280,33 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     }
     spectrum_build_hann_window(s.window, (int)cfg->fft_size);
 
-    const size_t wf_bytes = (size_t)WF_H * DISP_W * sizeof(float);
-    s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s.wf_db)
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0)
     {
-        ESP_LOGE(TAG, "wf_db alloc failed (%u bytes)", (unsigned)wf_bytes);
+        ESP_LOGE(TAG, "PSRAM not initialized; wf_db requires SPIRAM");
         free(s.window);
         free(s.fft_buf);
         free(s.canvas_buf);
         return ESP_ERR_NO_MEM;
     }
-    for (int i = 0; i < WF_H * DISP_W; i++)
+
+    const size_t wf_bytes = (size_t)WF_STORE_H * DISP_W * sizeof(float);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG, "PSRAM before wf_db alloc: free=%u largest=%u", (unsigned)psram_free, (unsigned)psram_largest);
+
+    s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s.wf_db)
+    {
+        ESP_LOGE(TAG, "wf_db SPIRAM alloc failed (%u bytes), free=%u largest=%u",
+                 (unsigned)wf_bytes,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        free(s.window);
+        free(s.fft_buf);
+        free(s.canvas_buf);
+        return ESP_ERR_NO_MEM;
+    }
+    for (int i = 0; i < WF_STORE_H * DISP_W; i++)
         s.wf_db[i] = s.wf_db_floor;
     s.wf_write_idx = 0;
 
@@ -296,7 +351,7 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     }
 
     ESP_LOGI(TAG, "Spectrum init OK — FFT %u, %.1f fps, wf %dx%d (%.1f KB)",
-             cfg->fft_size, cfg->lines_per_sec, DISP_W, WF_H,
+             cfg->fft_size, cfg->lines_per_sec, DISP_W, WF_DISP_H,
              (float)wf_bytes / 1024.0f);
     return ESP_OK;
 }

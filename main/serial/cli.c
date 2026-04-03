@@ -123,6 +123,52 @@ static void cmd_sp_alpha(const char *line)
     }
 }
 
+static void cmd_sp_wfcondense(const char *line)
+{
+    float f = 2.0f;
+    if (sscanf(line, "sp wfcondense %f", &f) == 1)
+    {
+        spectrum_set_wf_condense(f);
+        ESP_LOGI(TAG, "[sp] wfcondense=%.2f", f);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp wfcondense <1.0..3.0>");
+    }
+}
+
+static void cmd_sp_wfbeta(const char *line)
+{
+    float b = 0.0f;
+    if (sscanf(line, "sp wfbeta %f", &b) == 1)
+    {
+        spectrum_set_wf_temporal_beta(b);
+        ESP_LOGI(TAG, "[sp] wfbeta=%.2f", b);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp wfbeta <0.0..0.5>");
+    }
+}
+
+static void cmd_sp_wfbilinear(const char *line)
+{
+    int en = 0;
+    if (sscanf(line, "sp wfbilinear %d", &en) == 1)
+    {
+        if (en < 0)
+            en = 0;
+        if (en > 1)
+            en = 1;
+        spectrum_set_wf_bilinear(en != 0);
+        ESP_LOGI(TAG, "[sp] wfbilinear=%d", en);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp wfbilinear <0|1>");
+    }
+}
+
 static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp off ", .handler = cmd_sp_off},
     {.prefix = "sp view ", .handler = cmd_sp_view},
@@ -131,6 +177,9 @@ static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp gamma ", .handler = cmd_sp_gamma},
     {.prefix = "sp palette ", .handler = cmd_sp_palette},
     {.prefix = "sp alpha ", .handler = cmd_sp_alpha},
+    {.prefix = "sp wfcondense ", .handler = cmd_sp_wfcondense},
+    {.prefix = "sp wfbeta ", .handler = cmd_sp_wfbeta},
+    {.prefix = "sp wfbilinear ", .handler = cmd_sp_wfbilinear},
 };
 
 static void handle_cli_line(const char *line)
@@ -154,15 +203,18 @@ static void handle_cli_line(const char *line)
         float wf_ceil = 0.0f;
         float gamma = 1.0f;
         float alpha = 0.25f;
+        float wfcondense = 2.0f;
+        float wfbeta = 0.0f;
         uint8_t view = 0;
-        uint8_t palette = 0;
+        uint8_t palette = 4;
         uint16_t cwbfo = 700;
+        bool wfbilinear = true;
         spectrum_get_runtime(&off, &view, &wf_floor, &wf_ceil, &cwbfo,
-                             &gamma, &palette, &alpha);
-        ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f",
+                             &gamma, &palette, &alpha, &wfcondense, &wfbeta, &wfbilinear);
+        ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f wfcondense=%.2f wfbeta=%.2f wfbilinear=%u",
                  off, (unsigned)view, wf_floor, wf_ceil, (unsigned)cwbfo,
-                 gamma, (unsigned)palette, alpha);
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0>");
+                 gamma, (unsigned)palette, alpha, wfcondense, wfbeta, wfbilinear ? 1 : 0);
+        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1>");
     }
 }
 

@@ -1,6 +1,7 @@
 #include "spectrum/render.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 #include "spectrum/palette.h"
 
@@ -161,10 +162,14 @@ void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
 
 void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int disp_w,
-                             int wf_h,
+                             int wf_disp_h,
                              int wf_y0,
                              const float *wf_db,
                              uint32_t wf_write_idx,
+                             int wf_store_h,
+                             float wf_condense,
+                             float temporal_beta,
+                             int bilinear,
                              float db_floor,
                              float db_ceil,
                              const uint8_t *gamma_lut,
@@ -175,18 +180,78 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
 
     const uint16_t *pal_lut = spectrum_palette_get_lut(palette);
 
-    for (int row = 0; row < wf_h; row++)
-    {
-        int ring_idx = (int)wf_write_idx - 1 - row;
-        if (ring_idx < 0)
-            ring_idx += wf_h;
+    if (wf_condense < 1.0f)
+        wf_condense = 1.0f;
+    float max_condense = (float)wf_store_h / (float)wf_disp_h;
+    if (wf_condense > max_condense)
+        wf_condense = max_condense;
 
-        const float *db_row = &wf_db[ring_idx * disp_w];
+    int visible_rows = (int)((float)wf_disp_h * wf_condense + 0.5f);
+    if (visible_rows < wf_disp_h)
+        visible_rows = wf_disp_h;
+    if (visible_rows > wf_store_h)
+        visible_rows = wf_store_h;
+
+    float row_den = (wf_disp_h > 1) ? (float)(wf_disp_h - 1) : 1.0f;
+    if (temporal_beta < 0.0f)
+        temporal_beta = 0.0f;
+    if (temporal_beta > 0.5f)
+        temporal_beta = 0.5f;
+
+    static float *prev_db = NULL;
+    static int prev_w = 0;
+    static int prev_h = 0;
+    if (!prev_db || prev_w != disp_w || prev_h != wf_disp_h)
+    {
+        free(prev_db);
+        prev_db = malloc((size_t)disp_w * (size_t)wf_disp_h * sizeof(float));
+        if (!prev_db)
+            return;
+        prev_w = disp_w;
+        prev_h = wf_disp_h;
+        for (int i = 0; i < disp_w * wf_disp_h; i++)
+            prev_db[i] = db_floor;
+    }
+
+    for (int row = 0; row < wf_disp_h; row++)
+    {
+        float src_pos = (float)row * (float)(visible_rows - 1) / row_den;
+        int src0 = (int)src_pos;
+        if (src0 < 0)
+            src0 = 0;
+        if (src0 >= visible_rows)
+            src0 = visible_rows - 1;
+        int src1 = src0 + 1;
+        if (src1 >= visible_rows)
+            src1 = visible_rows - 1;
+        float t = src_pos - (float)src0;
+
+        if (!bilinear)
+        {
+            if (t >= 0.5f)
+                src0 = src1;
+            src1 = src0;
+            t = 0.0f;
+        }
+
+        int ring_idx0 = (int)wf_write_idx - 1 - src0;
+        int ring_idx1 = (int)wf_write_idx - 1 - src1;
+        if (ring_idx0 < 0)
+            ring_idx0 += wf_store_h;
+        if (ring_idx1 < 0)
+            ring_idx1 += wf_store_h;
+
+        const float *db_row0 = &wf_db[ring_idx0 * disp_w];
+        const float *db_row1 = &wf_db[ring_idx1 * disp_w];
         uint16_t *px_row = &canvas_buf[(wf_y0 + row) * disp_w];
 
         for (int x = 0; x < disp_w; x++)
         {
-            uint8_t idx = db_to_color_idx_linear(db_row[x], db_floor, db_ceil);
+            float db = db_row0[x] * (1.0f - t) + db_row1[x] * t;
+            int pidx = row * disp_w + x;
+            float smoothed = prev_db[pidx] * temporal_beta + db * (1.0f - temporal_beta);
+            prev_db[pidx] = smoothed;
+            uint8_t idx = db_to_color_idx_linear(smoothed, db_floor, db_ceil);
             if (gamma_lut)
                 idx = gamma_lut[idx];
             px_row[x] = pal_lut[idx];
@@ -196,7 +261,7 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
 
 void spectrum_store_wf_row(float *wf_db,
                            uint32_t *wf_write_idx,
-                           int wf_h,
+                           int wf_store_h,
                            int disp_w,
                            const float *mag,
                            int mag_len,
@@ -221,7 +286,7 @@ void spectrum_store_wf_row(float *wf_db,
         dst[px] = 10.0f * log10f(m + 1e-12f) + level_offset_db;
     }
 
-    *wf_write_idx = (*wf_write_idx + 1) % wf_h;
+    *wf_write_idx = (*wf_write_idx + 1) % wf_store_h;
 }
 
 void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
