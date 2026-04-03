@@ -1,4 +1,4 @@
-#include "cat_service.h"
+#include "cat/service.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -7,6 +7,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "cat/proto.h"
+#include "cat/state.h"
 
 #define CAT_TASK_STACK 4096
 #define CAT_TASK_PRIO 2
@@ -75,38 +77,9 @@ static struct
 
 #define CAT_POLL_GAP_MS 80
 
-static const char *state_name(cat_state_t st)
-{
-    switch (st)
-    {
-    case CAT_ST_DISCONNECTED:
-        return "disconnected";
-    case CAT_ST_PORT_OPEN:
-        return "port_open";
-    case CAT_ST_SYNC:
-        return "sync";
-    case CAT_ST_PROBE:
-        return "probe";
-    case CAT_ST_READY:
-        return "ready";
-    case CAT_ST_IQ_ENABLING:
-        return "iq_enabling";
-    case CAT_ST_IQ_VERIFY:
-        return "iq_verify";
-    case CAT_ST_IQ_ACTIVE:
-        return "iq_active";
-    case CAT_ST_DEGRADED:
-        return "degraded";
-    case CAT_ST_FAULT:
-        return "fault";
-    default:
-        return "unknown";
-    }
-}
-
 const char *cat_state_to_str(cat_state_t st)
 {
-    return state_name(st);
+    return cat_state_name(st);
 }
 
 static void notify_status(void)
@@ -133,7 +106,7 @@ static void set_state(cat_state_t st)
     xSemaphoreGive(s.lock);
     if (changed)
     {
-        ESP_LOGI(TAG, "state -> %s", state_name(st));
+        ESP_LOGI(TAG, "state -> %s", cat_state_name(st));
         notify_status();
     }
 }
@@ -217,25 +190,6 @@ static void send_cmd_no_wait(cat_cmd_id_t id, const char *cmd)
     (void)id;
 }
 
-static bool parse_iq_value(const char *frame, bool *iq_on)
-{
-    if (strncmp(frame, "Q9", 2) != 0)
-    {
-        return false;
-    }
-    size_t n = strlen(frame);
-    for (size_t i = n; i > 0; i--)
-    {
-        char c = frame[i - 1];
-        if (c == '0' || c == '1')
-        {
-            *iq_on = (c == '1');
-            return true;
-        }
-    }
-    return false;
-}
-
 static void set_iq_status(bool enabled)
 {
     xSemaphoreTake(s.lock, portMAX_DELAY);
@@ -244,67 +198,6 @@ static void set_iq_status(bool enabled)
     xSemaphoreGive(s.lock);
     notify_status();
 }
-
-static bool parse_mode(const char *frame, char *out, size_t out_len)
-{
-    if (strncmp(frame, "MD", 2) != 0)
-    {
-        return false;
-    }
-    strlcpy(out, frame + 2, out_len);
-    return out[0] != '\0';
-}
-
-static uint8_t parse_mode_code(const char *mode)
-{
-    if (!mode || mode[0] == '\0')
-    {
-        return 0;
-    }
-    int v = atoi(mode);
-    if (v < 0)
-    {
-        return 0;
-    }
-    if (v > 255)
-    {
-        v = 255;
-    }
-    return (uint8_t)v;
-}
-
-static bool parse_filter(const char *frame, char *out, size_t out_len, uint32_t *hz)
-{
-    const char *p = NULL;
-    if (strncmp(frame, "FW", 2) == 0 || strncmp(frame, "BW", 2) == 0)
-    {
-        p = frame + 2;
-    }
-    else
-    {
-        return false;
-    }
-
-    strlcpy(out, p, out_len);
-    uint32_t v = 0;
-    bool have_digits = false;
-    while (*p)
-    {
-        if (*p >= '0' && *p <= '9')
-        {
-            have_digits = true;
-            v = v * 10u + (uint32_t)(*p - '0');
-        }
-        else if (have_digits)
-        {
-            break;
-        }
-        p++;
-    }
-    *hz = have_digits ? v : 0;
-    return out[0] != '\0';
-}
-
 
 static void apply_frame_fields(const char *frame)
 {
@@ -315,9 +208,9 @@ static void apply_frame_fields(const char *frame)
     
     uint32_t filter_hz = 0;
 
-    bool have_iq = parse_iq_value(frame, &iq);
-    bool have_mode = parse_mode(frame, mode, sizeof(mode));
-    bool have_filter = parse_filter(frame, filter, sizeof(filter), &filter_hz);
+    bool have_iq = cat_proto_parse_iq_value(frame, &iq);
+    bool have_mode = cat_proto_parse_mode(frame, mode, sizeof(mode));
+    bool have_filter = cat_proto_parse_filter(frame, filter, sizeof(filter), &filter_hz);
     
 
     xSemaphoreTake(s.lock, portMAX_DELAY);
@@ -332,7 +225,7 @@ static void apply_frame_fields(const char *frame)
         if (strncmp(s.status.mode, mode, sizeof(s.status.mode)) != 0)
         {
             strlcpy(s.status.mode, mode, sizeof(s.status.mode));
-            s.status.mode_code = parse_mode_code(mode);
+            s.status.mode_code = cat_proto_parse_mode_code(mode);
             changed = true;
         }
     }
@@ -371,7 +264,6 @@ static bool frame_matches_pending(const char *frame)
         return strncmp(frame, "Q9", 2) == 0;
     case CAT_CMD_SET_IQ_ON:
         return false;
-        return (strncmp(frame, "ID", 2) == 0) || (strncmp(frame, "VR", 2) == 0);
     case CAT_CMD_GET_MODE:
         return strncmp(frame, "MD", 2) == 0;
     case CAT_CMD_GET_FILTER:
@@ -407,7 +299,7 @@ static void handle_frame(const char *frame)
         case CAT_CMD_GET_IQ:
         {
             bool iq_on = false;
-            if (parse_iq_value(frame, &iq_on))
+            if (cat_proto_parse_iq_value(frame, &iq_on))
             {
                 set_iq_status(iq_on);
                 if (s.status.state == CAT_ST_SYNC)
@@ -648,8 +540,8 @@ static void cat_task(void *arg)
             xSemaphoreTake(s.lock, portMAX_DELAY);
             st = s.status;
             xSemaphoreGive(s.lock);
-            ESP_LOGI(TAG, "status state=%s iq=%d mode=%s filter=%s fw=? to=%lu rt=%lu",
-                     state_name(st.state),
+            ESP_LOGI(TAG, "status state=%s iq=%d mode=%s filter=%s to=%lu rt=%lu",
+                     cat_state_name(st.state),
                      st.iq_enabled ? 1 : 0,
                      st.mode[0] ? st.mode : "?",
                      st.filter[0] ? st.filter : "?",

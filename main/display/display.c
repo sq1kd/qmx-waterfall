@@ -10,7 +10,7 @@
  *   BL         → GPIO  7   (on/off, active-low: 0 = backlight on)
  */
 
-#include "display.h"
+#include "display/display.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
