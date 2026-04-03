@@ -3,6 +3,47 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool parse_ndigits(const char *p, int n, int *out)
+{
+    if (!p || !out || n <= 0)
+    {
+        return false;
+    }
+    int v = 0;
+    for (int i = 0; i < n; i++)
+    {
+        char c = p[i];
+        if (c < '0' || c > '9')
+        {
+            return false;
+        }
+        v = v * 10 + (c - '0');
+    }
+    *out = v;
+    return true;
+}
+
+static bool parse_signed_rit_5(const char *p, int32_t *out)
+{
+    if (!p || !out)
+    {
+        return false;
+    }
+    char sign = p[0];
+    if (sign != '+' && sign != '-')
+    {
+        return false;
+    }
+
+    int mag = 0;
+    if (!parse_ndigits(p + 1, 4, &mag))
+    {
+        return false;
+    }
+    *out = (sign == '-') ? -(int32_t)mag : (int32_t)mag;
+    return true;
+}
+
 bool cat_proto_parse_iq_value(const char *frame, bool *iq_on)
 {
     if (strncmp(frame, "Q9", 2) != 0)
@@ -80,4 +121,53 @@ bool cat_proto_parse_filter(const char *frame, char *out, size_t out_len, uint32
     }
     *hz = have_digits ? v : 0;
     return out[0] != '\0';
+}
+
+bool cat_proto_parse_if(const char *frame, uint8_t *mode_code, int32_t *rit_hz, bool *rit_on)
+{
+    if (!frame || strncmp(frame, "IF", 2) != 0)
+    {
+        return false;
+    }
+
+    const char *p = frame + 2;
+    size_t n = strlen(p);
+    if (n < 34)
+    {
+        return false;
+    }
+
+    /* TS-480 style IF payload positions (1-based after IF):
+     * [17..21] signed RIT (+/-dddd), [22] RIT status, [28] mode. */
+    int32_t rit = 0;
+    if (!parse_signed_rit_5(p + 16, &rit))
+    {
+        return false;
+    }
+
+    char rit_status = p[21];
+    if (rit_status != '0' && rit_status != '1')
+    {
+        return false;
+    }
+
+    int mode = 0;
+    if (!parse_ndigits(p + 27, 1, &mode))
+    {
+        return false;
+    }
+
+    if (mode_code)
+    {
+        *mode_code = (uint8_t)mode;
+    }
+    if (rit_hz)
+    {
+        *rit_hz = rit;
+    }
+    if (rit_on)
+    {
+        *rit_on = (rit_status == '1');
+    }
+    return true;
 }

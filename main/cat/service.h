@@ -29,6 +29,8 @@ typedef struct
     uint8_t mode_code;
     char filter[24];
     uint32_t filter_hz;
+    int32_t rit_hz;
+    bool rit_on;
     uint32_t rx_frames;
     uint32_t tx_cmds;
     uint32_t parse_errors;

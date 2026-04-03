@@ -31,13 +31,6 @@ static void cmd_sp_off(const char *line)
     }
 }
 
-static void cmd_sp_clear(const char *line)
-{
-    (void)line;
-    spectrum_clear();
-    ESP_LOGI(TAG, "[sp] cleared");
-}
-
 static void cmd_sp_view(const char *line)
 {
     int mode = -1;
@@ -66,11 +59,78 @@ static void cmd_sp_range(const char *line)
     }
 }
 
+static void cmd_sp_cwbfo(const char *line)
+{
+    int hz = 0;
+    if (sscanf(line, "sp cwbfo %d", &hz) == 1)
+    {
+        if (hz < 400)
+            hz = 400;
+        if (hz > 1000)
+            hz = 1000;
+        spectrum_set_cw_pitch_hz((uint16_t)hz);
+        ESP_LOGI(TAG, "[sp] cwbfo=%d Hz", hz);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp cwbfo <400..1000>");
+    }
+}
+
+static void cmd_sp_gamma(const char *line)
+{
+    float gamma = 1.0f;
+    if (sscanf(line, "sp gamma %f", &gamma) == 1)
+    {
+        spectrum_set_wf_gamma(gamma);
+        ESP_LOGI(TAG, "[sp] gamma=%.2f", gamma);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp gamma <0.5..2.5>");
+    }
+}
+
+static void cmd_sp_palette(const char *line)
+{
+    int pal = 0;
+    if (sscanf(line, "sp palette %d", &pal) == 1)
+    {
+        if (pal < 0)
+            pal = 0;
+        if (pal > 5)
+            pal = 5;
+        spectrum_set_wf_palette((uint8_t)pal);
+        ESP_LOGI(TAG, "[sp] palette=%d (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma)", pal);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp palette <0..5>");
+    }
+}
+
+static void cmd_sp_alpha(const char *line)
+{
+    float a = 0.25f;
+    if (sscanf(line, "sp alpha %f", &a) == 1)
+    {
+        spectrum_set_spec_alpha(a);
+        ESP_LOGI(TAG, "[sp] alpha=%.2f", a);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp alpha <0.01..1.0>");
+    }
+}
+
 static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp off ", .handler = cmd_sp_off},
-    {.prefix = "sp clear", .handler = cmd_sp_clear},
     {.prefix = "sp view ", .handler = cmd_sp_view},
     {.prefix = "sp range ", .handler = cmd_sp_range},
+    {.prefix = "sp cwbfo ", .handler = cmd_sp_cwbfo},
+    {.prefix = "sp gamma ", .handler = cmd_sp_gamma},
+    {.prefix = "sp palette ", .handler = cmd_sp_palette},
+    {.prefix = "sp alpha ", .handler = cmd_sp_alpha},
 };
 
 static void handle_cli_line(const char *line)
@@ -89,7 +149,20 @@ static void handle_cli_line(const char *line)
 
     if (strncmp(line, "sp", 2) == 0)
     {
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp clear | sp view <0|1> | sp range <floor> <ceil>");
+        float off = 0.0f;
+        float wf_floor = 0.0f;
+        float wf_ceil = 0.0f;
+        float gamma = 1.0f;
+        float alpha = 0.25f;
+        uint8_t view = 0;
+        uint8_t palette = 0;
+        uint16_t cwbfo = 700;
+        spectrum_get_runtime(&off, &view, &wf_floor, &wf_ceil, &cwbfo,
+                             &gamma, &palette, &alpha);
+        ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f",
+                 off, (unsigned)view, wf_floor, wf_ceil, (unsigned)cwbfo,
+                 gamma, (unsigned)palette, alpha);
+        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0>");
     }
 }
 

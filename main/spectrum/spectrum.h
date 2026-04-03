@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "lvgl.h"
@@ -37,6 +38,22 @@ void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution,
 /* Update CAT-derived mode/filter for spectrum filter overlay rendering. */
 void spectrum_set_filter_params(uint8_t mode_code, uint32_t filter_hz);
 
+/* Update CAT-driven mode/RIT used for marker and filter centering. */
+void spectrum_set_cat_tuning(uint8_t mode_code, int32_t rit_hz, bool rit_on);
+
+/* Set CW beat frequency used for CW/CWR center offset. */
+void spectrum_set_cw_pitch_hz(uint16_t hz);
+
+/* Read current runtime spectrum settings for CLI/status display. */
+void spectrum_get_runtime(float *level_offset_db,
+                          uint8_t *view_mode,
+                          float *wf_floor_db,
+                          float *wf_ceil_db,
+                          uint16_t *cw_pitch_hz,
+                          float *wf_gamma,
+                          uint8_t *wf_palette,
+                          float *spec_alpha);
+
 /* Apply display level offset before mapping to colors. */
 void spectrum_set_level_offset_db(float offset_db);
 
@@ -46,8 +63,12 @@ void spectrum_set_view_mode(uint8_t mode);
 /* Set waterfall dB floor and ceiling for colour mapping. */
 void spectrum_set_wf_range(float floor_db, float ceil_db);
 
-/* Clear spectrum and spectrum canvas immediately. */
-void spectrum_clear(void);
+/* Waterfall rendering tuning: gamma and palette (0..5). */
+void spectrum_set_wf_gamma(float gamma);
+void spectrum_set_wf_palette(uint8_t palette);
+
+/* Spectrum trace EMA alpha (Python avg_alpha style), range (0,1]. */
+void spectrum_set_spec_alpha(float alpha);
 
 /*
  * Initialise spectrum and create the DSP task on core 1.

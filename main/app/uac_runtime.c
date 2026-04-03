@@ -1,6 +1,8 @@
 #include "app/runtime_priv.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "display/display.h"
@@ -8,6 +10,105 @@
 #include "cat/service.h"
 
 static const char *TAG = "usb_audio_cdc_info";
+
+#define UAC_EVT_QUEUE_LEN 8
+
+typedef enum
+{
+    UAC_EVT_DISCONNECT = 1,
+    UAC_EVT_STOP,
+} uac_evt_id_t;
+
+typedef struct
+{
+    uac_evt_id_t id;
+    uac_host_device_handle_t handle;
+} uac_evt_t;
+
+static QueueHandle_t s_uac_evt_queue;
+static TaskHandle_t s_uac_evt_task;
+static volatile bool s_uac_disconnect_pending;
+
+static bool app_runtime_queue_uac_event(uac_evt_id_t id, uac_host_device_handle_t handle)
+{
+    if (s_uac_evt_queue == NULL)
+    {
+        return false;
+    }
+    uac_evt_t ev = {
+        .id = id,
+        .handle = handle,
+    };
+    return xQueueSend(s_uac_evt_queue, &ev, 0) == pdTRUE;
+}
+
+static void app_runtime_handle_uac_disconnect(uac_host_device_handle_t handle)
+{
+    if (handle == NULL)
+    {
+        return;
+    }
+
+    bool was_iq = false;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    for (int i = 0; i < APP_RUNTIME_MAX_UAC_DEVICES; i++)
+    {
+        if (s_uac_handles[i] == handle)
+        {
+            s_uac_handles[i] = NULL;
+            break;
+        }
+    }
+    if (s_iq_handle == handle)
+    {
+        s_iq_handle = NULL;
+        s_iq_stream_started = false;
+        s_iq_start_in_progress = false;
+        was_iq = true;
+    }
+    xSemaphoreGive(s_dev_mutex);
+
+    if (was_iq)
+    {
+        spectrum_stop();
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_spectrum_started = false;
+        xSemaphoreGive(s_dev_mutex);
+    }
+
+    esp_err_t cerr = uac_host_device_close(handle);
+    if (cerr != ESP_OK && cerr != ESP_ERR_INVALID_STATE)
+    {
+        ESP_LOGW(TAG, "uac_host_device_close: %s", esp_err_to_name(cerr));
+    }
+}
+
+static void app_runtime_uac_evt_task(void *arg)
+{
+    (void)arg;
+    while (true)
+    {
+        uac_evt_t ev;
+        if (xQueueReceive(s_uac_evt_queue, &ev, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        if (ev.id == UAC_EVT_STOP)
+        {
+            break;
+        }
+        if (ev.id == UAC_EVT_DISCONNECT)
+        {
+            ESP_LOGI(TAG, "UAC device disconnected");
+            app_runtime_handle_uac_disconnect(ev.handle);
+            s_uac_disconnect_pending = false;
+        }
+    }
+
+    s_uac_evt_task = NULL;
+    vTaskDelete(NULL);
+}
 
 static void log_wstr(const char *label, const wchar_t *wstr)
 {
@@ -49,20 +150,6 @@ static void app_runtime_store_uac_handle(uac_host_device_handle_t handle)
         if (s_uac_handles[i] == NULL)
         {
             s_uac_handles[i] = handle;
-            break;
-        }
-    }
-    xSemaphoreGive(s_dev_mutex);
-}
-
-static void app_runtime_remove_uac_handle(uac_host_device_handle_t handle)
-{
-    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-    for (int i = 0; i < APP_RUNTIME_MAX_UAC_DEVICES; i++)
-    {
-        if (s_uac_handles[i] == handle)
-        {
-            s_uac_handles[i] = NULL;
             break;
         }
     }
@@ -171,19 +258,14 @@ static void uac_device_callback(uac_host_device_handle_t handle,
     }
     if (event == UAC_HOST_DRIVER_EVENT_DISCONNECTED)
     {
-        ESP_LOGI(TAG, "UAC device disconnected");
-        spectrum_stop();
-        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-        if (s_iq_handle == handle)
+        if (s_uac_disconnect_pending)
         {
-            s_iq_handle = NULL;
+            return;
         }
-        xSemaphoreGive(s_dev_mutex);
-        app_runtime_remove_uac_handle(handle);
-        esp_err_t cerr = uac_host_device_close(handle);
-        if (cerr != ESP_OK)
+        s_uac_disconnect_pending = true;
+        if (!app_runtime_queue_uac_event(UAC_EVT_DISCONNECT, handle))
         {
-            ESP_LOGW(TAG, "uac_host_device_close: %s", esp_err_to_name(cerr));
+            s_uac_disconnect_pending = false;
         }
     }
     (void)arg;
@@ -217,27 +299,21 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
         return;
     }
     app_runtime_store_uac_handle(handle);
+    s_uac_disconnect_pending = false;
     print_uac_device_info(handle, "Microphone");
 
-    uac_host_dev_alt_param_t alt_param = {0};
     uint8_t channels = 2;
     uint8_t bit_res = 24;
     uint32_t freq = 48000;
-    if (uac_host_get_device_alt_param(handle, 1, &alt_param) == ESP_OK)
+    uac_host_dev_info_t info = {0};
+    uint8_t alt_count = 1;
+    if (uac_host_get_device_info(handle, &info) == ESP_OK && info.iface_alt_num > 0)
     {
-        channels = alt_param.channels;
-        bit_res = alt_param.bit_resolution;
-        freq = (alt_param.sample_freq_type > 0)
-                   ? alt_param.sample_freq[0]
-                   : alt_param.sample_freq_lower;
-        ESP_LOGI(TAG, "Stream: %u ch, %u bit, %lu Hz", channels, bit_res, (unsigned long)freq);
-    }
-    else
-    {
-        ESP_LOGW(TAG, "uac_host_get_device_alt_param(1) failed; using defaults");
+        alt_count = info.iface_alt_num;
     }
 
-    for (uint8_t alt = 0; alt < 8; alt++)
+    bool stream_params_set = false;
+    for (uint8_t alt = 1; alt <= alt_count; alt++)
     {
         uac_host_dev_alt_param_t ap = {0};
         if (uac_host_get_device_alt_param(handle, alt, &ap) == ESP_OK)
@@ -245,8 +321,26 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
             uint32_t sf = (ap.sample_freq_type > 0) ? ap.sample_freq[0] : ap.sample_freq_lower;
             ESP_LOGI(TAG, "Alt%u fmt=%u ch=%u bits=%u sf=%lu",
                      alt, ap.format, ap.channels, ap.bit_resolution, (unsigned long)sf);
+
+            if (!stream_params_set)
+            {
+                channels = ap.channels;
+                bit_res = ap.bit_resolution;
+                freq = sf;
+                stream_params_set = true;
+            }
         }
     }
+
+    if (stream_params_set)
+    {
+        ESP_LOGI(TAG, "Stream: %u ch, %u bit, %lu Hz", channels, bit_res, (unsigned long)freq);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "No valid UAC alt settings read; using defaults");
+    }
+
     spectrum_set_stream_params(channels, bit_res, freq);
 
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
@@ -272,7 +366,11 @@ void app_runtime_close_all_uac_handles(void)
     {
         if (s_uac_handles[i] != NULL)
         {
-            uac_host_device_close(s_uac_handles[i]);
+            esp_err_t cerr = uac_host_device_close(s_uac_handles[i]);
+            if (cerr != ESP_OK && cerr != ESP_ERR_INVALID_STATE)
+            {
+                ESP_LOGW(TAG, "uac_host_device_close: %s", esp_err_to_name(cerr));
+            }
             s_uac_handles[i] = NULL;
         }
     }
@@ -281,6 +379,22 @@ void app_runtime_close_all_uac_handles(void)
 
 void app_runtime_uac_install_driver(void)
 {
+    s_uac_evt_queue = xQueueCreate(UAC_EVT_QUEUE_LEN, sizeof(uac_evt_t));
+    if (s_uac_evt_queue == NULL)
+    {
+        ESP_LOGE(TAG, "failed to create UAC event queue");
+        abort();
+    }
+    BaseType_t ok = xTaskCreate(app_runtime_uac_evt_task, "uac_evt", 4096, NULL,
+                                s_uac_task_priority - 1, &s_uac_evt_task);
+    if (ok != pdTRUE)
+    {
+        vQueueDelete(s_uac_evt_queue);
+        s_uac_evt_queue = NULL;
+        ESP_LOGE(TAG, "failed to create UAC event task");
+        abort();
+    }
+
     const uac_host_driver_config_t uac_config = {
         .create_background_task = true,
         .task_priority = s_uac_task_priority,
@@ -294,6 +408,26 @@ void app_runtime_uac_install_driver(void)
 
 void app_runtime_uac_uninstall_driver(void)
 {
+    if (s_uac_evt_queue)
+    {
+        (void)app_runtime_queue_uac_event(UAC_EVT_STOP, NULL);
+    }
+    for (int i = 0; i < 50 && s_uac_evt_task != NULL; i++)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (s_uac_evt_task)
+    {
+        vTaskDelete(s_uac_evt_task);
+        s_uac_evt_task = NULL;
+    }
+    if (s_uac_evt_queue)
+    {
+        vQueueDelete(s_uac_evt_queue);
+        s_uac_evt_queue = NULL;
+    }
+    s_uac_disconnect_pending = false;
+
     ESP_ERROR_CHECK(uac_host_uninstall());
 }
 

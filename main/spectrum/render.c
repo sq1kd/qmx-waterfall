@@ -2,40 +2,7 @@
 
 #include <math.h>
 
-static const uint16_t turbo_lut[256] = {
-    0x1811, 0x2011, 0x2011, 0x2012, 0x2012, 0x2812, 0x2812, 0x2813,
-    0x2813, 0x2813, 0x2814, 0x3014, 0x3014, 0x3015, 0x3015, 0x3016,
-    0x3016, 0x3016, 0x3017, 0x3017, 0x3818, 0x3018, 0x3819, 0x3819,
-    0x381A, 0x381A, 0x381B, 0x381B, 0x381C, 0x381C, 0x381D, 0x381D,
-    0x381E, 0x381E, 0x381F, 0x381F, 0x383F, 0x303F, 0x303F, 0x305F,
-    0x305F, 0x305F, 0x287F, 0x287F, 0x287F, 0x289F, 0x289F, 0x209F,
-    0x20BF, 0x20BF, 0x20BF, 0x18DF, 0x18DF, 0x18DF, 0x10FF, 0x10FF,
-    0x10FF, 0x091F, 0x091F, 0x011F, 0x013F, 0x013F, 0x013F, 0x015F,
-    0x015F, 0x017F, 0x017F, 0x019F, 0x019F, 0x01BF, 0x01BF, 0x01DF,
-    0x01DF, 0x01FF, 0x01FF, 0x021F, 0x021F, 0x023F, 0x023F, 0x025F,
-    0x027F, 0x027F, 0x029F, 0x029F, 0x02BF, 0x02DF, 0x02DF, 0x02FF,
-    0x031F, 0x031F, 0x033F, 0x035F, 0x035F, 0x037F, 0x039F, 0x03BF,
-    0x03BF, 0x03DF, 0x03FF, 0x041F, 0x043F, 0x043F, 0x045F, 0x047F,
-    0x049F, 0x04BF, 0x04DF, 0x04FF, 0x051F, 0x053F, 0x055F, 0x057F,
-    0x059F, 0x05BF, 0x05DF, 0x05FF, 0x061F, 0x063F, 0x065F, 0x067F,
-    0x069F, 0x06BF, 0x06DF, 0x06FF, 0x071F, 0x0F1F, 0x0F3F, 0x173F,
-    0x1F3F, 0x273F, 0x273F, 0x2F3F, 0x373F, 0x3F1F, 0x471F, 0x4F1F,
-    0x571F, 0x5F1F, 0x671F, 0x6F1F, 0x771F, 0x7EFF, 0x86FF, 0x8EFF,
-    0x96FF, 0x9EDF, 0xA6DF, 0xAEDF, 0xB6BF, 0xBEBF, 0xC6BF, 0xCE9F,
-    0xD69F, 0xDE7F, 0xE67F, 0xEE5F, 0xF65F, 0xFE3F, 0xFE3F, 0xFE5F,
-    0xFE5F, 0xFE7F, 0xFE7F, 0xFE9F, 0xFE9F, 0xFEBF, 0xFEBF, 0xFEDF,
-    0xFEDF, 0xFEFF, 0xFEFF, 0xFF1F, 0xFF1F, 0xFF3F, 0xFF3F, 0xFF5F,
-    0xFF5F, 0xFF7F, 0xFF7F, 0xFF9F, 0xFF9F, 0xFFBF, 0xFFBF, 0xFFBF,
-    0xFFDF, 0xFFDF, 0xFFDF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-    0xFFFF, 0xFFFF, 0xFFFF, 0xFFDF, 0xFFDF, 0xFFBF, 0xFFBF, 0xFF9F,
-    0xFF9F, 0xFF7F, 0xFF7F, 0xFF5F, 0xFF3F, 0xFF3F, 0xFF1F, 0xFEFF,
-    0xFEDF, 0xFEDF, 0xFEBF, 0xFE9F, 0xFE7F, 0xFE5F, 0xFE3F, 0xFE1F,
-    0xFDFF, 0xFDDF, 0xFDBF, 0xFD9F, 0xFD7F, 0xFD5F, 0xFD3F, 0xFD1F,
-    0xFCFF, 0xFCDF, 0xFCBF, 0xFC9F, 0xFC7F, 0xFC5F, 0xFC3F, 0xFC1F,
-    0xFBFF, 0xFBDF, 0xFBBF, 0xFB9F, 0xFB7F, 0xFB5F, 0xFB3F, 0xFB1F,
-    0xFAFF, 0xFADF, 0xFABF, 0xFA9F, 0xFA7F, 0xFA5F, 0xFA3F, 0xFA1F,
-    0xF9FF, 0xF9DF, 0xF1BF, 0xF1BF, 0xF19F, 0xE99F, 0xE97F, 0xE17F,
-};
+#include "spectrum/palette.h"
 
 uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -59,7 +26,7 @@ static int bin_to_px(float bin, int disp_w, int nbins)
     return px;
 }
 
-static uint8_t db_to_color_idx(float db, float db_floor, float db_ceil)
+static uint8_t db_to_color_idx_linear(float db, float db_floor, float db_ceil)
 {
     float range = db_ceil - db_floor;
     if (range < 1.0f)
@@ -133,6 +100,65 @@ void spectrum_draw_spectrum_strip(uint16_t *canvas_buf,
     }
 }
 
+void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
+                                     int disp_w,
+                                     int spec_h,
+                                     const float *db_vals,
+                                     int db_len,
+                                     float db_floor,
+                                     float db_ceil,
+                                     uint16_t bg,
+                                     uint16_t fg)
+{
+    for (int i = 0; i < spec_h * disp_w; i++)
+        canvas_buf[i] = bg;
+
+    const float dyn_db = db_ceil - db_floor;
+    const float bot_db = db_floor;
+
+    int prev_y = -1;
+    for (int px = 0; px < disp_w; px++)
+    {
+        float fbin = (float)px * (float)(db_len - 1) / (float)(disp_w - 1);
+        int bin = (int)fbin;
+        if (bin >= db_len - 1)
+            bin = db_len - 2;
+        if (bin < 0)
+            bin = 0;
+        float frac = fbin - (float)bin;
+
+        float db = db_vals[bin] * (1.0f - frac) + db_vals[bin + 1] * frac;
+        float norm = (db - bot_db) / dyn_db;
+        if (norm < 0.0f)
+            norm = 0.0f;
+        if (norm > 1.0f)
+            norm = 1.0f;
+
+        int y_top = (spec_h - 1) - (int)(norm * (spec_h - 1));
+
+        if (prev_y != -1)
+        {
+            int y0 = prev_y;
+            int y1 = y_top;
+            if (y0 > y1)
+            {
+                int tmp = y0;
+                y0 = y1;
+                y1 = tmp;
+            }
+            for (int y = y0; y <= y1; y++)
+            {
+                canvas_buf[y * disp_w + px] = fg;
+            }
+        }
+        else
+        {
+            canvas_buf[y_top * disp_w + px] = fg;
+        }
+        prev_y = y_top;
+    }
+}
+
 void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int disp_w,
                              int wf_h,
@@ -140,10 +166,14 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              const float *wf_db,
                              uint32_t wf_write_idx,
                              float db_floor,
-                             float db_ceil)
+                             float db_ceil,
+                             const uint8_t *gamma_lut,
+                             uint8_t palette)
 {
     if (!wf_db)
         return;
+
+    const uint16_t *pal_lut = spectrum_palette_get_lut(palette);
 
     for (int row = 0; row < wf_h; row++)
     {
@@ -156,7 +186,10 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
 
         for (int x = 0; x < disp_w; x++)
         {
-            px_row[x] = turbo_lut[db_to_color_idx(db_row[x], db_floor, db_ceil)];
+            uint8_t idx = db_to_color_idx_linear(db_row[x], db_floor, db_ceil);
+            if (gamma_lut)
+                idx = gamma_lut[idx];
+            px_row[x] = pal_lut[idx];
         }
     }
 }
@@ -244,10 +277,7 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
     {
         uint16_t *row = &canvas_buf[y * disp_w];
         for (int x = left_px; x <= right_px; x++)
-        {
-            uint16_t cur = row[x];
-            row[x] = ((cur >> 1) & 0x7BEF) + ((filter_fill >> 1) & 0x7BEF);
-        }
+            row[x] = filter_fill;
         if (left_px >= 0 && left_px < disp_w)
             row[left_px] = filter_edge;
         if (right_px >= 0 && right_px < disp_w)

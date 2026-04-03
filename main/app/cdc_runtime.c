@@ -20,6 +20,7 @@ static void cat_status_callback(const cat_status_t *st, void *user_ctx)
 
     char msg[96];
     spectrum_set_filter_params(st->mode_code, st->filter_hz);
+    spectrum_set_cat_tuning(st->mode_code, st->rit_hz, st->rit_on);
 
     if (st->state == CAT_ST_IQ_ACTIVE)
     {

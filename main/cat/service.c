@@ -32,7 +32,7 @@ typedef enum
     CAT_CMD_NONE = 0,
     CAT_CMD_GET_IQ,
     CAT_CMD_SET_IQ_ON,
-    CAT_CMD_GET_MODE,
+    CAT_CMD_GET_IF,
     CAT_CMD_GET_FILTER,
 } cat_cmd_id_t;
 
@@ -202,16 +202,25 @@ static void set_iq_status(bool enabled)
 static void apply_frame_fields(const char *frame)
 {
     bool changed = false;
+    bool mode_changed = false;
     bool iq = false;
     char mode[16] = {0};
     char filter[24] = {0};
-    
     uint32_t filter_hz = 0;
+    uint8_t if_mode_code = 0;
+    int32_t if_rit_hz = 0;
+    bool if_rit_on = false;
 
     bool have_iq = cat_proto_parse_iq_value(frame, &iq);
     bool have_mode = cat_proto_parse_mode(frame, mode, sizeof(mode));
     bool have_filter = cat_proto_parse_filter(frame, filter, sizeof(filter), &filter_hz);
-    
+    bool have_if = cat_proto_parse_if(frame, &if_mode_code, &if_rit_hz, &if_rit_on);
+
+    if (have_if)
+    {
+        snprintf(mode, sizeof(mode), "%u", (unsigned)if_mode_code);
+        have_mode = true;
+    }
 
     xSemaphoreTake(s.lock, portMAX_DELAY);
     if (have_iq)
@@ -222,10 +231,21 @@ static void apply_frame_fields(const char *frame)
     }
     if (have_mode)
     {
-        if (strncmp(s.status.mode, mode, sizeof(s.status.mode)) != 0)
+        uint8_t new_mode_code = cat_proto_parse_mode_code(mode);
+        if (strncmp(s.status.mode, mode, sizeof(s.status.mode)) != 0 || s.status.mode_code != new_mode_code)
         {
             strlcpy(s.status.mode, mode, sizeof(s.status.mode));
-            s.status.mode_code = cat_proto_parse_mode_code(mode);
+            mode_changed = (s.status.mode_code != new_mode_code);
+            s.status.mode_code = new_mode_code;
+            changed = true;
+        }
+    }
+    if (have_if)
+    {
+        if (s.status.rit_hz != if_rit_hz || s.status.rit_on != if_rit_on)
+        {
+            s.status.rit_hz = if_rit_hz;
+            s.status.rit_on = if_rit_on;
             changed = true;
         }
     }
@@ -239,6 +259,12 @@ static void apply_frame_fields(const char *frame)
         }
     }
     xSemaphoreGive(s.lock);
+
+    if (mode_changed)
+    {
+        s.poll_filter_due = true;
+        s.poll_filter_due_at = xTaskGetTickCount() + pdMS_TO_TICKS(CAT_POLL_GAP_MS);
+    }
 
     if (changed)
     {
@@ -264,8 +290,8 @@ static bool frame_matches_pending(const char *frame)
         return strncmp(frame, "Q9", 2) == 0;
     case CAT_CMD_SET_IQ_ON:
         return false;
-    case CAT_CMD_GET_MODE:
-        return strncmp(frame, "MD", 2) == 0;
+    case CAT_CMD_GET_IF:
+        return strncmp(frame, "IF", 2) == 0;
     case CAT_CMD_GET_FILTER:
         return (strncmp(frame, "FW", 2) == 0) || (strncmp(frame, "BW", 2) == 0);
     default:
@@ -324,7 +350,7 @@ static void handle_frame(const char *frame)
         case CAT_CMD_SET_IQ_ON:
             set_state(CAT_ST_IQ_VERIFY);
             break;
-        case CAT_CMD_GET_MODE:
+        case CAT_CMD_GET_IF:
         case CAT_CMD_GET_FILTER:
         default:
             break;
@@ -444,6 +470,8 @@ static void try_state_progress(void)
         break;
 
     case CAT_ST_PROBE:
+        s.poll_filter_due = true;
+        s.poll_filter_due_at = xTaskGetTickCount();
         set_state(CAT_ST_READY);
         break;
 
@@ -470,9 +498,7 @@ static void try_state_progress(void)
         if ((uint32_t)((now - s.last_poll) * portTICK_PERIOD_MS) >= s.poll_period_ms)
         {
             s.last_poll = now;
-            send_cmd(CAT_CMD_GET_MODE, "MD;", CAT_CMD_TIMEOUT_MS);
-            s.poll_filter_due = true;
-            s.poll_filter_due_at = now + pdMS_TO_TICKS(CAT_POLL_GAP_MS);
+            send_cmd(CAT_CMD_GET_IF, "IF;", CAT_CMD_TIMEOUT_MS);
         }
         break;
 
@@ -498,9 +524,7 @@ static void try_state_progress(void)
         if ((uint32_t)((now - s.last_poll) * portTICK_PERIOD_MS) >= s.poll_period_ms)
         {
             s.last_poll = now;
-            send_cmd(CAT_CMD_GET_MODE, "MD;", CAT_CMD_TIMEOUT_MS);
-            s.poll_filter_due = true;
-            s.poll_filter_due_at = now + pdMS_TO_TICKS(CAT_POLL_GAP_MS);
+            send_cmd(CAT_CMD_GET_IF, "IF;", CAT_CMD_TIMEOUT_MS);
         }
         break;
 
@@ -540,12 +564,13 @@ static void cat_task(void *arg)
             xSemaphoreTake(s.lock, portMAX_DELAY);
             st = s.status;
             xSemaphoreGive(s.lock);
-            ESP_LOGI(TAG, "status state=%s iq=%d mode=%s filter=%s to=%lu rt=%lu",
+            ESP_LOGI(TAG, "status state=%s iq=%d mode=%s filter=%s rit=%ld(%d) to=%lu rt=%lu",
                      cat_state_name(st.state),
                      st.iq_enabled ? 1 : 0,
                      st.mode[0] ? st.mode : "?",
                      st.filter[0] ? st.filter : "?",
-                     
+                     (long)st.rit_hz,
+                     st.rit_on ? 1 : 0,
                      (unsigned long)st.timeouts,
                      (unsigned long)st.retries);
         }

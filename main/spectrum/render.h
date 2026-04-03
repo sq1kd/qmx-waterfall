@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
 #include <stdint.h>
 
 uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b);
@@ -16,6 +15,16 @@ void spectrum_draw_spectrum_strip(uint16_t *canvas_buf,
                                   uint16_t bg,
                                   uint16_t fg);
 
+void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
+                                     int disp_w,
+                                     int spec_h,
+                                     const float *db_vals,
+                                     int db_len,
+                                     float db_floor,
+                                     float db_ceil,
+                                     uint16_t bg,
+                                     uint16_t fg);
+
 void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int disp_w,
                              int wf_h,
@@ -23,7 +32,9 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              const float *wf_db,
                              uint32_t wf_write_idx,
                              float db_floor,
-                             float db_ceil);
+                             float db_ceil,
+                             const uint8_t *gamma_lut,
+                             uint8_t palette);
 
 void spectrum_store_wf_row(float *wf_db,
                            uint32_t *wf_write_idx,
