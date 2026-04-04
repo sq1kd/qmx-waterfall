@@ -29,8 +29,6 @@ typedef struct
 
 static QueueHandle_t s_cdc_evt_queue;
 static TaskHandle_t s_cdc_evt_task;
-static bool s_cdc_disconnect_pending;
-static bool s_cdc_drop_logged;
 
 static bool queue_cdc_event(cdc_evt_id_t id, const usbh_cdc_device_event_data_t *event_data)
 {
@@ -230,27 +228,43 @@ static void cdc_dev_event_callback(usbh_cdc_device_event_t event,
     switch (event)
     {
     case CDC_HOST_DEVICE_EVENT_CONNECTED:
-        s_cdc_disconnect_pending = false;
-        if (!queue_cdc_event(CDC_EVT_CONNECTED, event_data) && !s_cdc_drop_logged)
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_disc.cdc_pending = false;
+        bool cdc_drop_logged = s_disc.cdc_drop_logged;
+        xSemaphoreGive(s_dev_mutex);
+        if (!queue_cdc_event(CDC_EVT_CONNECTED, event_data) && !cdc_drop_logged)
         {
-            s_cdc_drop_logged = true;
+            xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+            s_disc.cdc_drop_logged = true;
+            xSemaphoreGive(s_dev_mutex);
             ESP_LOGW(TAG, "drop CDC connect event (queue full)");
         }
         break;
     case CDC_HOST_DEVICE_EVENT_DISCONNECTED:
-        if (!s_cdc_disconnect_pending && recovery_on_disconnect(RECOVERY_SRC_CDC))
+    {
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        bool pending = s_disc.cdc_pending;
+        s_disc.in_progress = true;
+        xSemaphoreGive(s_dev_mutex);
+        if (!pending && recovery_on_disconnect(RECOVERY_SRC_CDC))
         {
             cat_service_request_stop_fast();
-            s_cdc_disconnect_pending = true;
-            if (!queue_cdc_event(CDC_EVT_DISCONNECTED, event_data) && !s_cdc_drop_logged)
+            xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+            s_disc.cdc_pending = true;
+            bool was_drop_logged = s_disc.cdc_drop_logged;
+            xSemaphoreGive(s_dev_mutex);
+            if (!queue_cdc_event(CDC_EVT_DISCONNECTED, event_data) && !was_drop_logged)
             {
-                s_cdc_disconnect_pending = false;
-                s_cdc_drop_logged = true;
+                xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+                s_disc.cdc_pending = false;
+                s_disc.cdc_drop_logged = true;
+                xSemaphoreGive(s_dev_mutex);
                 ESP_LOGW(TAG, "drop CDC disconnect event (queue full)");
                 (void)recovery_request();
             }
         }
         break;
+    }
     default:
         break;
     }
@@ -266,7 +280,9 @@ static void cdc_evt_task(void *arg)
         if (xQueueReceive(s_cdc_evt_queue, &ev, portMAX_DELAY) != pdTRUE)
             continue;
 
-        s_cdc_drop_logged = false;
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_disc.cdc_drop_logged = false;
+        xSemaphoreGive(s_dev_mutex);
         if (ev.id == CDC_EVT_STOP)
             break;
 
@@ -282,6 +298,10 @@ static void cdc_evt_task(void *arg)
     }
 
     s_cdc_evt_task = NULL;
+    if (s_install.stop_events)
+    {
+        xEventGroupSetBits(s_install.stop_events, APP_STOPBIT_CDC_TASK);
+    }
     vTaskDelete(NULL);
 }
 
@@ -307,6 +327,24 @@ void app_runtime_close_cdc_port_if_open(void)
 
 void app_runtime_cdc_install_driver(void)
 {
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    bool already_installed = s_install.cdc_installed;
+    xSemaphoreGive(s_dev_mutex);
+    if (already_installed)
+    {
+        return;
+    }
+    if (s_install.stop_events == NULL)
+    {
+        s_install.stop_events = xEventGroupCreate();
+        if (!s_install.stop_events)
+        {
+            ESP_LOGE(TAG, "failed to create stop event group");
+            abort();
+        }
+    }
+    xEventGroupClearBits(s_install.stop_events, APP_STOPBIT_CDC_TASK);
+
     s_cdc_evt_queue = xQueueCreate(CDC_EVT_QUEUE_LEN, sizeof(cdc_evt_t));
     if (!s_cdc_evt_queue)
     {
@@ -333,56 +371,51 @@ void app_runtime_cdc_install_driver(void)
 
     ESP_ERROR_CHECK(usbh_cdc_register_dev_event_cb(ESP_USB_DEVICE_MATCH_ID_ANY,
                                                    cdc_dev_event_callback, NULL));
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_install.cdc_installed = true;
+    xSemaphoreGive(s_dev_mutex);
 }
 
 void app_runtime_cdc_uninstall_driver(void)
 {
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    bool installed = s_install.cdc_installed;
+    xSemaphoreGive(s_dev_mutex);
+    if (!installed)
+    {
+        return;
+    }
     if (s_cdc_evt_queue)
     {
         (void)queue_cdc_event(CDC_EVT_STOP, NULL);
     }
-    for (int i = 0; i < (int)APP_TASK_STOP_MAX_POLLS && s_cdc_evt_task != NULL; i++)
+    if (s_cdc_evt_task && s_install.stop_events)
     {
-        vTaskDelay(pdMS_TO_TICKS(APP_TASK_STOP_POLL_MS));
-    }
-    if (s_cdc_evt_task)
-    {
-        vTaskDelete(s_cdc_evt_task);
-        s_cdc_evt_task = NULL;
+        EventBits_t bits = xEventGroupWaitBits(s_install.stop_events,
+                                               APP_STOPBIT_CDC_TASK,
+                                               pdTRUE,
+                                               pdFALSE,
+                                               pdMS_TO_TICKS(APP_TASK_STOP_WAIT_MS));
+        if ((bits & APP_STOPBIT_CDC_TASK) == 0)
+        {
+            ESP_LOGW(TAG, "CDC event task stop timeout");
+        }
     }
     if (s_cdc_evt_queue)
     {
         vQueueDelete(s_cdc_evt_queue);
         s_cdc_evt_queue = NULL;
     }
-    s_cdc_disconnect_pending = false;
-    s_cdc_drop_logged = false;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_disc.cdc_pending = false;
+    s_disc.cdc_drop_logged = false;
+    s_disc.in_progress = false;
+    xSemaphoreGive(s_dev_mutex);
 
-    esp_err_t err = ESP_OK;
-    uint32_t attempts = 0;
-    for (; attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS; attempts++)
-    {
-        err = usbh_cdc_driver_uninstall();
-        if (err == ESP_OK)
-        {
-            break;
-        }
-        if (err != ESP_ERR_INVALID_STATE)
-        {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(APP_USB_UNINSTALL_RETRY_DELAY_MS));
-    }
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "usbh_cdc_driver_uninstall: %s (attempts=%lu)",
-                 esp_err_to_name(err),
-                 (unsigned long)(attempts + 1));
-    }
-    else if (attempts > 0)
-    {
-        ESP_LOGI(TAG, "usbh_cdc_driver_uninstall recovered after %lu retries",
-                 (unsigned long)attempts);
-    }
+    (void)app_runtime_retry_invalid_state("usbh_cdc_driver_uninstall",
+                                          usbh_cdc_driver_uninstall,
+                                          NULL);
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_install.cdc_installed = false;
+    xSemaphoreGive(s_dev_mutex);
 }

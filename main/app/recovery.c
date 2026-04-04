@@ -259,6 +259,7 @@ bool recovery_on_disconnect(recovery_source_t source)
     {
         s_state = RECOVERY_ST_DISCONNECTING;
         s_cycle_id++;
+        (void)app_runtime_conn_epoch_bump();
         s_cycle_started_at = xTaskGetTickCount();
         memset(&s_uac_timing, 0, sizeof(s_uac_timing));
         memset(&s_cdc_timing, 0, sizeof(s_cdc_timing));

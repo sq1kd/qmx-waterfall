@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/event_groups.h"
+#include "app/runtime.h"
 #include "usb/uac_host.h"
 #include "iot_usbh_cdc.h"
 
@@ -18,6 +20,29 @@ extern uac_host_stream_config_t s_iq_stream_cfg;
 extern bool s_iq_stream_started;
 extern bool s_spectrum_started;
 extern bool s_iq_start_in_progress;
+
+typedef struct
+{
+    bool uac_pending;
+    bool cdc_pending;
+    bool uac_drop_logged;
+    bool cdc_drop_logged;
+    bool in_progress;
+    bool uac_seen;
+} runtime_disconnect_state_t;
+
+typedef struct
+{
+    EventGroupHandle_t stop_events;
+    bool uac_installed;
+    bool cdc_installed;
+} runtime_install_state_t;
+
+extern runtime_disconnect_state_t s_disc;
+extern runtime_install_state_t s_install;
+
+#define APP_STOPBIT_UAC_TASK (1U << 0)
+#define APP_STOPBIT_CDC_TASK (1U << 1)
 
 void app_runtime_set_stream_state(bool iq_started, bool spectrum_started, bool iq_start_in_progress);
 void app_runtime_close_all_uac_handles(void);

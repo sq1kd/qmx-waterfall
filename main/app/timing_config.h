@@ -30,6 +30,7 @@
 /* Common task stop polling helpers used during uninstall. */
 #define APP_TASK_STOP_MAX_POLLS 50u
 #define APP_TASK_STOP_POLL_MS 10u
+#define APP_TASK_STOP_WAIT_MS 600u
 
 /* Retry window for transient INVALID_STATE during teardown. */
 #define APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS 20u

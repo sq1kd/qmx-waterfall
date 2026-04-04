@@ -28,6 +28,7 @@ static const char *TAG = "usb_audio_cdc_info";
 static QueueHandle_t s_app_queue;
 static SemaphoreHandle_t s_dev_mutex;
 static volatile bool s_usb_lib_stop_requested;
+static TaskHandle_t s_usb_lib_task_handle;
 
 static void usb_lib_task(void *arg);
 
@@ -76,13 +77,21 @@ static void stop_usb_host_task(TaskHandle_t *usb_lib_task_hdl)
         ESP_LOGW(TAG, "usb_host_lib_unblock: %s", esp_err_to_name(unblk));
     }
 
-    /* Wait for usb_lib task to stop event loop and notify; force delete on timeout. */
+    /* Wait for usb_lib task to stop event loop and notify. */
     if (ulTaskNotifyTake(false, pdMS_TO_TICKS(APP_USB_LIB_STOP_WAIT_MS)) == 0)
     {
-        ESP_LOGW(TAG, "usb_lib task did not finish in time; forcing delete");
+        ESP_LOGW(TAG, "usb_lib task did not finish in time");
     }
-    vTaskDelete(*usb_lib_task_hdl);
+    if (s_usb_lib_task_handle == *usb_lib_task_hdl)
+    {
+        s_usb_lib_task_handle = NULL;
+    }
     *usb_lib_task_hdl = NULL;
+
+    if (!app_runtime_clients_uninstalled())
+    {
+        ESP_LOGW(TAG, "usb host teardown before clients fully uninstalled");
+    }
 
     esp_err_t free_ret = usb_host_device_free_all();
     if (free_ret != ESP_OK && free_ret != ESP_ERR_INVALID_STATE)
@@ -91,33 +100,7 @@ static void stop_usb_host_task(TaskHandle_t *usb_lib_task_hdl)
     }
 
     ESP_LOGI(TAG, "No more clients, uninstalling USB Host Library");
-    esp_err_t uninstall_err = ESP_OK;
-    uint32_t uninstall_attempts = 0;
-    for (; uninstall_attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS; uninstall_attempts++)
-    {
-        uninstall_err = usb_host_uninstall();
-        if (uninstall_err == ESP_OK)
-        {
-            break;
-        }
-        if (uninstall_err != ESP_ERR_INVALID_STATE)
-        {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(APP_USB_UNINSTALL_RETRY_DELAY_MS));
-    }
-
-    if (uninstall_err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "usb_host_uninstall: %s (attempts=%lu)",
-                 esp_err_to_name(uninstall_err),
-                 (unsigned long)(uninstall_attempts + 1));
-    }
-    else if (uninstall_attempts > 0)
-    {
-        ESP_LOGI(TAG, "usb_host_uninstall recovered after %lu retries",
-                 (unsigned long)uninstall_attempts);
-    }
+    (void)app_runtime_retry_invalid_state("usb_host_uninstall", usb_host_uninstall, NULL);
 }
 
 static void usb_lib_task(void *arg)
@@ -129,6 +112,7 @@ static void usb_lib_task(void *arg)
         .peripheral_map = BIT0,
     };
     ESP_ERROR_CHECK(usb_host_install(&host_config));
+    s_usb_lib_task_handle = xTaskGetCurrentTaskHandle();
     xTaskNotifyGive(arg);
 
     while (!s_usb_lib_stop_requested)
@@ -150,7 +134,8 @@ static void usb_lib_task(void *arg)
     }
 
     xTaskNotifyGive(arg);
-    vTaskSuspend(NULL);
+    s_usb_lib_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void app_main(void)

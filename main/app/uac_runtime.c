@@ -28,11 +28,16 @@ typedef struct
 
 static QueueHandle_t s_uac_evt_queue;
 static TaskHandle_t s_uac_evt_task;
-static volatile bool s_uac_disconnect_pending;
-static volatile bool s_disconnect_in_progress;
-static bool s_uac_drop_logged;
 static TickType_t s_next_iq_start_allowed_tick;
-static volatile bool s_uac_disconnect_seen;
+
+static bool runtime_uac_disconnect_latched(void)
+{
+    bool latched;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    latched = s_disc.uac_seen;
+    xSemaphoreGive(s_dev_mutex);
+    return latched;
+}
 
 static bool app_runtime_queue_uac_event(uac_evt_id_t id, uac_host_device_handle_t handle)
 {
@@ -56,13 +61,17 @@ static void app_runtime_handle_uac_disconnect(uac_host_device_handle_t handle)
 
     TickType_t t0 = xTaskGetTickCount();
     bool was_iq = false;
-    s_disconnect_in_progress = true;
-    s_uac_disconnect_seen = true;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_disc.in_progress = true;
+    s_disc.uac_seen = true;
+    xSemaphoreGive(s_dev_mutex);
     app_runtime_set_stream_state(false, false, false);
     if (xSemaphoreTake(s_dev_mutex, pdMS_TO_TICKS(APP_DEV_MUTEX_TIMEOUT_MS)) != pdTRUE)
     {
         ESP_LOGW(TAG, "disconnect: dev_mutex timeout (stage 1)");
-        s_disconnect_in_progress = false;
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_disc.in_progress = false;
+        xSemaphoreGive(s_dev_mutex);
         return;
     }
     for (int i = 0; i < APP_RUNTIME_MAX_UAC_DEVICES; i++)
@@ -96,7 +105,9 @@ static void app_runtime_handle_uac_disconnect(uac_host_device_handle_t handle)
                                was_iq);
 
     /* Completed one disconnect cycle; keep IQ start blocked until reconnect. */
-    s_disconnect_in_progress = false;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_disc.in_progress = false;
+    xSemaphoreGive(s_dev_mutex);
 }
 
 static void app_runtime_uac_evt_task(void *arg)
@@ -122,6 +133,10 @@ static void app_runtime_uac_evt_task(void *arg)
     }
 
     s_uac_evt_task = NULL;
+    if (s_install.stop_events)
+    {
+        xEventGroupSetBits(s_install.stop_events, APP_STOPBIT_UAC_TASK);
+    }
     vTaskDelete(NULL);
 }
 
@@ -192,11 +207,12 @@ static void start_iq_stream_and_spectrum(void)
     uac_host_stream_config_t iq_stream_cfg = s_iq_stream_cfg;
     xSemaphoreGive(s_dev_mutex);
 
-    if (iq_handle == NULL || s_disconnect_in_progress)
+    if (iq_handle == NULL || runtime_uac_disconnect_latched())
     {
         return;
     }
 
+    uint32_t epoch = app_runtime_conn_epoch_get();
     uac_host_stream_config_t start_cfg = iq_stream_cfg;
     start_cfg.flags |= FLAG_STREAM_SUSPEND_AFTER_START;
 
@@ -209,7 +225,7 @@ static void start_iq_stream_and_spectrum(void)
 
     for (int attempt = 1; attempt <= (int)APP_IQ_RESUME_RETRY_MAX_ATTEMPTS; attempt++)
     {
-        if (s_disconnect_in_progress)
+        if (!app_runtime_conn_epoch_is_current(epoch) || runtime_uac_disconnect_latched())
         {
             ESP_LOGW(TAG, "IQ start aborted due to disconnect");
             return;
@@ -246,7 +262,7 @@ static void start_iq_stream_and_spectrum(void)
 
     if (!spectrum_started)
     {
-        if (s_disconnect_in_progress)
+        if (!app_runtime_conn_epoch_is_current(epoch) || runtime_uac_disconnect_latched())
         {
             ESP_LOGW(TAG, "spectrum init aborted due to disconnect");
             return;
@@ -295,7 +311,7 @@ static void uac_device_callback(uac_host_device_handle_t handle,
 {
     if (event == UAC_HOST_DEVICE_EVENT_RX_DONE)
     {
-        if (s_uac_disconnect_seen)
+        if (runtime_uac_disconnect_latched())
         {
             return;
         }
@@ -305,25 +321,37 @@ static void uac_device_callback(uac_host_device_handle_t handle,
     if (event == UAC_HOST_DRIVER_EVENT_DISCONNECTED)
     {
         cat_service_request_stop_fast();
-        s_disconnect_in_progress = true;
-        s_uac_disconnect_seen = true;
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_disc.in_progress = true;
+        s_disc.uac_seen = true;
+        bool pending = s_disc.uac_pending;
+        xSemaphoreGive(s_dev_mutex);
         /* Stop spectrum read loop immediately from callback context. */
         spectrum_notify_rx(NULL);
 
-        if (s_uac_disconnect_pending || !recovery_on_disconnect(RECOVERY_SRC_UAC))
+        if (pending || !recovery_on_disconnect(RECOVERY_SRC_UAC))
         {
             return;
         }
-        s_uac_disconnect_pending = true;
+        xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+        s_disc.uac_pending = true;
+        xSemaphoreGive(s_dev_mutex);
         if (!app_runtime_queue_uac_event(UAC_EVT_DISCONNECT, handle))
         {
-            if (!s_uac_drop_logged)
+            bool should_log = false;
+            xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+            if (!s_disc.uac_drop_logged)
             {
-                s_uac_drop_logged = true;
+                s_disc.uac_drop_logged = true;
+                should_log = true;
+            }
+            s_disc.uac_pending = false;
+            xSemaphoreGive(s_dev_mutex);
+            if (should_log)
+            {
                 ESP_LOGW(TAG, "drop UAC disconnect event (queue full)");
             }
             (void)recovery_request();
-            s_uac_disconnect_pending = false;
         }
     }
     (void)arg;
@@ -357,11 +385,13 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
         return;
     }
     app_runtime_store_uac_handle(handle);
-    s_disconnect_in_progress = false;
-    s_uac_disconnect_pending = false;
-    s_uac_drop_logged = false;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_disc.in_progress = false;
+    s_disc.uac_pending = false;
+    s_disc.uac_drop_logged = false;
+    s_disc.uac_seen = false;
+    xSemaphoreGive(s_dev_mutex);
     s_next_iq_start_allowed_tick = 0;
-    s_uac_disconnect_seen = false;
     print_uac_device_info(handle, "Microphone");
 
     uint8_t channels = 2;
@@ -441,6 +471,24 @@ void app_runtime_close_all_uac_handles(void)
 
 void app_runtime_uac_install_driver(void)
 {
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    bool already_installed = s_install.uac_installed;
+    xSemaphoreGive(s_dev_mutex);
+    if (already_installed)
+    {
+        return;
+    }
+    if (s_install.stop_events == NULL)
+    {
+        s_install.stop_events = xEventGroupCreate();
+        if (!s_install.stop_events)
+        {
+            ESP_LOGE(TAG, "failed to create stop event group");
+            abort();
+        }
+    }
+    xEventGroupClearBits(s_install.stop_events, APP_STOPBIT_UAC_TASK);
+
     s_uac_evt_queue = xQueueCreate(UAC_EVT_QUEUE_LEN, sizeof(uac_evt_t));
     if (s_uac_evt_queue == NULL)
     {
@@ -466,39 +514,57 @@ void app_runtime_uac_install_driver(void)
         .callback_arg = NULL,
     };
     ESP_ERROR_CHECK(uac_host_install(&uac_config));
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_install.uac_installed = true;
+    xSemaphoreGive(s_dev_mutex);
 }
 
 void app_runtime_uac_uninstall_driver(void)
 {
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    bool installed = s_install.uac_installed;
+    xSemaphoreGive(s_dev_mutex);
+    if (!installed)
+    {
+        return;
+    }
     if (s_uac_evt_queue)
     {
         (void)app_runtime_queue_uac_event(UAC_EVT_STOP, NULL);
     }
-    for (int i = 0; i < (int)APP_TASK_STOP_MAX_POLLS && s_uac_evt_task != NULL; i++)
+    if (s_uac_evt_task && s_install.stop_events)
     {
-        vTaskDelay(pdMS_TO_TICKS(APP_TASK_STOP_POLL_MS));
-    }
-    if (s_uac_evt_task)
-    {
-        vTaskDelete(s_uac_evt_task);
-        s_uac_evt_task = NULL;
+        EventBits_t bits = xEventGroupWaitBits(s_install.stop_events,
+                                               APP_STOPBIT_UAC_TASK,
+                                               pdTRUE,
+                                               pdFALSE,
+                                               pdMS_TO_TICKS(APP_TASK_STOP_WAIT_MS));
+        if ((bits & APP_STOPBIT_UAC_TASK) == 0)
+        {
+            ESP_LOGW(TAG, "UAC event task stop timeout");
+        }
     }
     if (s_uac_evt_queue)
     {
         vQueueDelete(s_uac_evt_queue);
         s_uac_evt_queue = NULL;
     }
-    s_uac_disconnect_pending = false;
-    s_disconnect_in_progress = false;
-    s_uac_drop_logged = false;
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_disc.uac_pending = false;
+    s_disc.in_progress = false;
+    s_disc.uac_drop_logged = false;
+    s_disc.uac_seen = false;
+    xSemaphoreGive(s_dev_mutex);
     s_next_iq_start_allowed_tick = 0;
-    s_uac_disconnect_seen = false;
 
     esp_err_t err = uac_host_uninstall();
     if (err != ESP_OK)
     {
         ESP_LOGW(TAG, "uac_host_uninstall: %s", esp_err_to_name(err));
     }
+    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
+    s_install.uac_installed = false;
+    xSemaphoreGive(s_dev_mutex);
 }
 
 void app_runtime_trigger_iq_start_async(void)
