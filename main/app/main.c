@@ -11,12 +11,14 @@
 #include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_intr_alloc.h"
+#include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "usb/usb_host.h"
 #include "display/display.h"
 #include "serial/cli.h"
 #include "app/runtime.h"
 #include "app/recovery.h"
+#include "app/settings.h"
 #include "app/timing_config.h"
 
 #define HOST_LIB_TASK_PRIORITY 2
@@ -143,6 +145,15 @@ void app_main(void)
     configure_prod_log_levels();
     ESP_LOGI(TAG, "USB audio + CDC device info example");
 
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+    ESP_ERROR_CHECK(app_settings_init());
+
     display_init();
 
     s_dev_mutex = xSemaphoreCreateMutex();
@@ -224,6 +235,7 @@ void app_main(void)
     }
 
     stop_usb_host_task(&usb_lib_task_hdl);
+    (void)app_settings_flush_now();
 
     gpio_isr_handler_remove(APP_QUIT_PIN);
     vQueueDelete(s_app_queue);

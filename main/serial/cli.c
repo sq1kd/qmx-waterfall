@@ -6,7 +6,7 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "spectrum/spectrum.h"
+#include "app/settings.h"
 
 #define CLI_UART_NUM UART_NUM_0
 #define CLI_BUF_SZ 128
@@ -26,8 +26,10 @@ static void cmd_sp_off(const char *line)
     float val = 0.0f;
     if (sscanf(line, "sp off %f", &val) == 1)
     {
-        spectrum_set_level_offset_db(val);
-        ESP_LOGI(TAG, "[sp] level_offset_db=%.1f", val);
+        (void)app_settings_set_level_offset_db(val);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] level_offset_db=%.1f", cfg.level_offset_db);
     }
 }
 
@@ -36,12 +38,10 @@ static void cmd_sp_view(const char *line)
     int mode = -1;
     if (sscanf(line, "sp view %d", &mode) == 1)
     {
-        if (mode < 0)
-            mode = 0;
-        if (mode > 1)
-            mode = 1;
-        spectrum_set_view_mode((uint8_t)mode);
-        ESP_LOGI(TAG, "[sp] view=%d (0=full 1=pos-only)", mode);
+        (void)app_settings_set_view_mode((uint8_t)mode);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] view=%u (0=full 1=pos-only)", (unsigned)cfg.view_mode);
     }
 }
 
@@ -50,8 +50,10 @@ static void cmd_sp_range(const char *line)
     float floor_db = 0.0f, ceil_db = 0.0f;
     if (sscanf(line, "sp range %f %f", &floor_db, &ceil_db) == 2)
     {
-        spectrum_set_wf_range(floor_db, ceil_db);
-        ESP_LOGI(TAG, "[sp] range=%.1f..%.1f dB", floor_db, ceil_db);
+        (void)app_settings_set_wf_range(floor_db, ceil_db);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] range=%.1f..%.1f dB", cfg.wf_floor_db, cfg.wf_ceil_db);
     }
     else
     {
@@ -64,12 +66,10 @@ static void cmd_sp_cwbfo(const char *line)
     int hz = 0;
     if (sscanf(line, "sp cwbfo %d", &hz) == 1)
     {
-        if (hz < 400)
-            hz = 400;
-        if (hz > 1000)
-            hz = 1000;
-        spectrum_set_cw_pitch_hz((uint16_t)hz);
-        ESP_LOGI(TAG, "[sp] cwbfo=%d Hz", hz);
+        (void)app_settings_set_cw_pitch_hz((uint16_t)hz);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] cwbfo=%u Hz", (unsigned)cfg.cw_pitch_hz);
     }
     else
     {
@@ -82,8 +82,10 @@ static void cmd_sp_gamma(const char *line)
     float gamma = 1.0f;
     if (sscanf(line, "sp gamma %f", &gamma) == 1)
     {
-        spectrum_set_wf_gamma(gamma);
-        ESP_LOGI(TAG, "[sp] gamma=%.2f", gamma);
+        (void)app_settings_set_wf_gamma(gamma);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] gamma=%.2f", cfg.wf_gamma);
     }
     else
     {
@@ -96,12 +98,10 @@ static void cmd_sp_palette(const char *line)
     int pal = 0;
     if (sscanf(line, "sp palette %d", &pal) == 1)
     {
-        if (pal < 0)
-            pal = 0;
-        if (pal > 5)
-            pal = 5;
-        spectrum_set_wf_palette((uint8_t)pal);
-        ESP_LOGI(TAG, "[sp] palette=%d (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma)", pal);
+        (void)app_settings_set_wf_palette((uint8_t)pal);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma)", (unsigned)cfg.wf_palette);
     }
     else
     {
@@ -114,8 +114,10 @@ static void cmd_sp_alpha(const char *line)
     float a = 0.25f;
     if (sscanf(line, "sp alpha %f", &a) == 1)
     {
-        spectrum_set_spec_alpha(a);
-        ESP_LOGI(TAG, "[sp] alpha=%.2f", a);
+        (void)app_settings_set_spec_alpha(a);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] alpha=%.2f", cfg.spec_alpha);
     }
     else
     {
@@ -128,8 +130,10 @@ static void cmd_sp_wfcondense(const char *line)
     float f = 2.0f;
     if (sscanf(line, "sp wfcondense %f", &f) == 1)
     {
-        spectrum_set_wf_condense(f);
-        ESP_LOGI(TAG, "[sp] wfcondense=%.2f", f);
+        (void)app_settings_set_wf_condense(f);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] wfcondense=%.2f", cfg.wf_condense);
     }
     else
     {
@@ -142,8 +146,10 @@ static void cmd_sp_wfbeta(const char *line)
     float b = 0.0f;
     if (sscanf(line, "sp wfbeta %f", &b) == 1)
     {
-        spectrum_set_wf_temporal_beta(b);
-        ESP_LOGI(TAG, "[sp] wfbeta=%.2f", b);
+        (void)app_settings_set_wf_temporal_beta(b);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] wfbeta=%.2f", cfg.wf_temporal_beta);
     }
     else
     {
@@ -156,12 +162,10 @@ static void cmd_sp_wfbilinear(const char *line)
     int en = 0;
     if (sscanf(line, "sp wfbilinear %d", &en) == 1)
     {
-        if (en < 0)
-            en = 0;
-        if (en > 1)
-            en = 1;
-        spectrum_set_wf_bilinear(en != 0);
-        ESP_LOGI(TAG, "[sp] wfbilinear=%d", en);
+        (void)app_settings_set_wf_bilinear(en != 0);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
+        ESP_LOGI(TAG, "[sp] wfbilinear=%u", cfg.wf_bilinear ? 1u : 0u);
     }
     else
     {
@@ -169,7 +173,23 @@ static void cmd_sp_wfbilinear(const char *line)
     }
 }
 
+static void cmd_sp_save(const char *line)
+{
+    (void)line;
+    esp_err_t err = app_settings_flush_now();
+    ESP_LOGI(TAG, "[sp] save: %s", esp_err_to_name(err));
+}
+
+static void cmd_sp_reset(const char *line)
+{
+    (void)line;
+    esp_err_t err = app_settings_reset_to_defaults(true);
+    ESP_LOGI(TAG, "[sp] reset: %s", esp_err_to_name(err));
+}
+
 static const cmd_entry_t s_sp_cmds[] = {
+    {.prefix = "sp save", .handler = cmd_sp_save},
+    {.prefix = "sp reset", .handler = cmd_sp_reset},
     {.prefix = "sp off ", .handler = cmd_sp_off},
     {.prefix = "sp view ", .handler = cmd_sp_view},
     {.prefix = "sp range ", .handler = cmd_sp_range},
@@ -198,23 +218,12 @@ static void handle_cli_line(const char *line)
 
     if (strncmp(line, "sp", 2) == 0)
     {
-        float off = 0.0f;
-        float wf_floor = 0.0f;
-        float wf_ceil = 0.0f;
-        float gamma = 1.0f;
-        float alpha = 0.25f;
-        float wfcondense = 2.0f;
-        float wfbeta = 0.0f;
-        uint8_t view = 0;
-        uint8_t palette = 4;
-        uint16_t cwbfo = 700;
-        bool wfbilinear = true;
-        spectrum_get_runtime(&off, &view, &wf_floor, &wf_ceil, &cwbfo,
-                             &gamma, &palette, &alpha, &wfcondense, &wfbeta, &wfbilinear);
+        app_settings_t cfg;
+        app_settings_get(&cfg);
         ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f wfcondense=%.2f wfbeta=%.2f wfbilinear=%u",
-                 off, (unsigned)view, wf_floor, wf_ceil, (unsigned)cwbfo,
-                 gamma, (unsigned)palette, alpha, wfcondense, wfbeta, wfbilinear ? 1 : 0);
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1>");
+                 cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db, (unsigned)cfg.cw_pitch_hz,
+                 cfg.wf_gamma, (unsigned)cfg.wf_palette, cfg.spec_alpha, cfg.wf_condense, cfg.wf_temporal_beta, cfg.wf_bilinear ? 1 : 0);
+        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1> | sp save | sp reset");
     }
 }
 

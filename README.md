@@ -191,3 +191,10 @@ The log output demonstrates a device that has failed. The Hub Driver will output
 ### Blank String Descriptors
 
 The current USB Host Library will automatically cache the Manufacturer, Product, and Serial Number string descriptors of the device during enumeration. However, when fetching the string descriptors, the USB Host Library will only fetch those strings descriptors of they of LANGID code 0x0409 (i.e., English - United States). Therefore, if the example does not print a particular descriptor, it is likely that the string descriptor was not cached during enumeration.
+
+### Windows VM
+
+```powershell
+esptool -b 460800 --before default-reset --after hard-reset --chip esp32s3 write-flash --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 usb_host_lib.bin
+idf-monitor -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 .\usb_host_lib.elf
+```

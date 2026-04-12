@@ -3,6 +3,7 @@ idf_component_register(SRCS "cat/service.c"
                             "cat/state.c"
                             "app/main.c"
                             "app/runtime.c"
+                            "app/settings.c"
                             "app/recovery.c"
                             "app/uac_runtime.c"
                             "app/cdc_runtime.c"
@@ -21,7 +22,8 @@ idf_component_register(SRCS "cat/service.c"
                                    esp_timer
                                    esp_lcd
                                    esp_driver_spi
-                                  lvgl
+                                   nvs_flash
+                                   lvgl
                                   esp_lvgl_port
                                   espressif__esp-dsp
                     )

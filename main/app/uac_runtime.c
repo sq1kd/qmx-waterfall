@@ -1,5 +1,6 @@
 #include "app/runtime_priv.h"
 #include "app/recovery.h"
+#include "app/settings.h"
 #include "app/timing_config.h"
 
 #include <stdio.h>
@@ -283,6 +284,7 @@ static void start_iq_stream_and_spectrum(void)
             }
             else
             {
+                app_settings_apply_to_runtime();
                 cat_status_t cat_st;
                 if (cat_service_get_status(&cat_st))
                 {
