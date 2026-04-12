@@ -50,42 +50,52 @@ static void cat_status_callback(const cat_status_t *st, void *user_ctx)
         return;
     }
 
-    char msg[96];
+    char detail[96];
     spectrum_set_filter_params(st->mode_code, st->filter_hz);
     spectrum_set_cat_tuning(st->mode_code, st->rit_hz, st->rit_on);
 
     if (st->state == CAT_ST_IQ_ACTIVE)
     {
-        snprintf(msg, sizeof(msg), "CAT: %s  M:%s  F:%s",
-                 cat_state_to_str(st->state),
+        snprintf(detail, sizeof(detail), "Mode %s | Filter %s",
                  st->mode[0] ? st->mode : "?",
                  st->filter[0] ? st->filter : "?");
-        display_set_status(msg);
+        display_set_status_lines("Radio linked", detail);
         app_runtime_trigger_iq_start_async();
         return;
     }
 
     if (st->state == CAT_ST_IQ_ENABLING || st->state == CAT_ST_IQ_VERIFY)
     {
-        display_set_status(DISP_MSG_ENABLING_IQ);
+        display_set_status_lines(DISP_MSG_ENABLING_IQ, "Enabling IQ stream");
         return;
     }
 
     if (st->state == CAT_ST_DEGRADED || st->state == CAT_ST_FAULT)
     {
-        snprintf(msg, sizeof(msg), "CAT %s t/o:%lu retry:%lu",
-                 cat_state_to_str(st->state),
+        snprintf(detail, sizeof(detail), "Timeouts %lu | Retries %lu",
                  (unsigned long)st->timeouts,
                  (unsigned long)st->retries);
-        display_set_status(msg);
+        display_set_status_lines("Link unstable", detail);
         return;
     }
 
-    snprintf(msg, sizeof(msg), "CAT: %s  M:%s  F:%s",
-             cat_state_to_str(st->state),
-             st->mode[0] ? st->mode : "?",
-             st->filter[0] ? st->filter : "?");
-    display_set_status(msg);
+    switch (st->state)
+    {
+    case CAT_ST_DISCONNECTED:
+        display_set_status_lines("Waiting for device", "Plug in USB audio + CAT");
+        break;
+    case CAT_ST_PORT_OPEN:
+        display_set_status_lines("Control link ready", "Waiting for radio replies");
+        break;
+    case CAT_ST_SYNC:
+    case CAT_ST_PROBE:
+    case CAT_ST_READY:
+        display_set_status_lines("Talking to radio", "Reading mode and filter");
+        break;
+    default:
+        display_set_status_lines("Working", "Synchronizing radio state");
+        break;
+    }
 }
 
 static void cdc_notif_callback(usbh_cdc_port_handle_t port,
@@ -213,7 +223,7 @@ static void handle_cdc_disconnected(void)
     spectrum_notify_rx(NULL);
     cat_service_stop();
     TickType_t t_cat = xTaskGetTickCount();
-    display_set_status(DISP_MSG_DISCONNECTED);
+    display_set_status_lines(DISP_MSG_DISCONNECTED, "Reconnect USB to continue");
     TickType_t t_ui = xTaskGetTickCount();
     recovery_record_cdc_timing((uint32_t)((t_mark - t0) * portTICK_PERIOD_MS),
                                (uint32_t)((t_cat - t_mark) * portTICK_PERIOD_MS),

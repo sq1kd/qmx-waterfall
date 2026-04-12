@@ -82,7 +82,7 @@ static bool app_settings_validate_and_repair(app_settings_t *cfg)
         cfg->wf_gamma = def.wf_gamma;
         repaired = true;
     }
-    if (cfg->wf_palette > 5)
+    if (cfg->wf_palette > 6)
     {
         cfg->wf_palette = def.wf_palette;
         repaired = true;

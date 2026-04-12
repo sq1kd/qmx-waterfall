@@ -50,8 +50,28 @@
 static const char *TAG = "display";
 
 static lv_display_t *s_disp = NULL;
-static lv_obj_t *s_label = NULL;
+static lv_obj_t *s_title = NULL;
+static lv_obj_t *s_detail = NULL;
 static lv_obj_t *s_canvas = NULL;
+
+static void display_set_status_lines_locked(const char *title, const char *detail)
+{
+    const char *safe_title = (title && title[0]) ? title : DISP_MSG_DISCONNECTED;
+    lv_label_set_text(s_title, safe_title);
+    lv_obj_align(s_title, LV_ALIGN_CENTER, 0, -10);
+
+    if (detail && detail[0])
+    {
+        lv_label_set_text(s_detail, detail);
+        lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(s_detail, LV_ALIGN_CENTER, 0, 10);
+    }
+    else
+    {
+        lv_label_set_text(s_detail, "");
+        lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 void display_init(void)
 {
@@ -137,8 +157,8 @@ void display_init(void)
         .color_format = LV_COLOR_FORMAT_RGB565,
         .rotation = {
             .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
+            .mirror_x = true,
+            .mirror_y = true,
         },
         .flags = {
             .swap_bytes = true,
@@ -170,13 +190,21 @@ void display_init(void)
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
 
-        s_label = lv_label_create(scr);
-        lv_label_set_long_mode(s_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(s_label, DISP_V_RES - 4); /* 280 px — logical landscape width */
-        lv_obj_set_style_text_color(s_label, lv_color_white(), LV_PART_MAIN);
-        lv_obj_set_style_text_align(s_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-        lv_obj_align(s_label, LV_ALIGN_CENTER, 0, 0);
-        lv_label_set_text(s_label, DISP_MSG_CONNECT_USB);
+        s_title = lv_label_create(scr);
+        lv_label_set_long_mode(s_title, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_title, DISP_V_RES - 8);
+        lv_obj_set_style_text_color(s_title, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_text_align(s_title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_align(s_title, LV_ALIGN_CENTER, 0, -10);
+        lv_label_set_text(s_title, DISP_MSG_CONNECT_USB);
+
+        s_detail = lv_label_create(scr);
+        lv_label_set_long_mode(s_detail, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_detail, DISP_V_RES - 8);
+        lv_obj_set_style_text_color(s_detail, lv_color_hex(0x95A3B7), LV_PART_MAIN);
+        lv_obj_set_style_text_align(s_detail, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_align(s_detail, LV_ALIGN_CENTER, 0, 10);
+        lv_label_set_text(s_detail, "Plug in USB audio + CAT");
 
         lvgl_port_unlock();
     }
@@ -186,14 +214,18 @@ void display_init(void)
 
 void display_set_status(const char *msg)
 {
-    if (s_label == NULL)
-    {
+    display_set_status_lines(msg, NULL);
+}
+
+void display_set_status_lines(const char *title, const char *detail)
+{
+    if (s_title == NULL || s_detail == NULL)
         return;
-    }
+
     if (lvgl_port_lock(0))
     {
-        lv_label_set_text(s_label, msg);
-        lv_obj_align(s_label, LV_ALIGN_CENTER, 0, 0);
+        display_set_status_lines_locked(title, detail);
+
         lvgl_port_unlock();
     }
 }
@@ -206,9 +238,13 @@ lv_obj_t *display_show_spectrum(void)
         lv_obj_t *scr = lv_display_get_screen_active(s_disp);
 
         /* Hide the status label */
-        if (s_label != NULL)
+        if (s_title != NULL)
         {
-            lv_obj_add_flag(s_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_title, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_detail != NULL)
+        {
+            lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
         }
 
         /* Black background */
@@ -227,7 +263,7 @@ lv_obj_t *display_show_spectrum(void)
 
 void display_show_status(const char *msg)
 {
-    if (!s_disp || !s_label)
+    if (!s_disp || !s_title || !s_detail)
         return;
 
     if (lvgl_port_lock(0))
@@ -240,10 +276,10 @@ void display_show_status(const char *msg)
             s_canvas = NULL;
         }
 
-        lv_obj_clear_flag(s_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
-        lv_label_set_text(s_label, msg ? msg : DISP_MSG_DISCONNECTED);
-        lv_obj_align(s_label, LV_ALIGN_CENTER, 0, 0);
+        display_set_status_lines_locked(msg ? msg : DISP_MSG_DISCONNECTED, "");
 
         lvgl_port_unlock();
     }

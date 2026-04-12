@@ -200,8 +200,8 @@ void spectrum_set_wf_gamma(float gamma)
 
 void spectrum_set_wf_palette(uint8_t palette)
 {
-    if (palette > 5)
-        palette = 5;
+    if (palette > 6)
+        palette = 6;
     s.wf_palette = palette;
     ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
 }

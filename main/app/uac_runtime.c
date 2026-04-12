@@ -11,6 +11,7 @@
 #include "display/display.h"
 #include "spectrum/spectrum.h"
 #include "cat/service.h"
+#include "ui/spectrum_ui.h"
 
 static const char *TAG = "usb_audio_cdc_info";
 
@@ -290,6 +291,7 @@ static void start_iq_stream_and_spectrum(void)
                 {
                     spectrum_set_filter_params(cat_st.mode_code, cat_st.filter_hz);
                 }
+                spectrum_ui_start();
                 xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
                 s_spectrum_started = true;
                 xSemaphoreGive(s_dev_mutex);
@@ -367,7 +369,7 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
         return;
     }
 
-    display_set_status(DISP_MSG_USB_FOUND);
+    display_set_status_lines(DISP_MSG_USB_FOUND, "Starting audio and control links");
 
     const uac_host_device_config_t dev_config = {
         .addr = addr,

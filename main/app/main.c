@@ -20,6 +20,7 @@
 #include "app/recovery.h"
 #include "app/settings.h"
 #include "app/timing_config.h"
+#include "ui/spectrum_ui.h"
 
 #define HOST_LIB_TASK_PRIORITY 2
 #define UAC_TASK_PRIORITY 3
@@ -155,6 +156,7 @@ void app_main(void)
     ESP_ERROR_CHECK(app_settings_init());
 
     display_init();
+    spectrum_ui_init();
 
     s_dev_mutex = xSemaphoreCreateMutex();
     assert(s_dev_mutex);

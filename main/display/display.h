@@ -4,13 +4,13 @@
 #include "lvgl.h"
 
 /*
- * Display status strings — shown centered on the screen.
- * Call from any FreeRTOS task; the function is internally thread-safe.
+ * Display status strings — shown on a friendly two-line status view.
+ * Call from any FreeRTOS task; functions are internally thread-safe.
  */
-#define DISP_MSG_CONNECT_USB "Connect USB device"
-#define DISP_MSG_USB_FOUND "USB device found"
-#define DISP_MSG_ENABLING_IQ "Enabling IQ mode..."
-#define DISP_MSG_DISCONNECTED "USB disconnected"
+#define DISP_MSG_CONNECT_USB "Waiting for device"
+#define DISP_MSG_USB_FOUND "Device detected"
+#define DISP_MSG_ENABLING_IQ "Preparing spectrum"
+#define DISP_MSG_DISCONNECTED "Device disconnected"
 
 /* Logical display dimensions after 90° CW rotation */
 #define DISP_LOGICAL_W 284
@@ -27,6 +27,13 @@ void display_init(void);
  * msg must remain valid for the duration of the call (it is copied internally).
  */
 void display_set_status(const char *msg);
+
+/*
+ * Update two-line status text.
+ * title/detail must remain valid for the call duration (copied internally).
+ * detail can be NULL or empty to hide the second line.
+ */
+void display_set_status_lines(const char *title, const char *detail);
 
 /*
  * Switch to spectrum mode: hide the status label, create a full-screen

@@ -2,7 +2,7 @@
 
 #include "spectrum/render.h"
 
-#define PAL_COUNT 6
+#define PAL_COUNT 7
 
 typedef struct
 {
@@ -106,11 +106,15 @@ static void ensure_palette_luts(void)
     static const rgb8_t plasma_stops[] = {
         {13, 8, 135}, {75, 3, 161}, {125, 3, 168}, {168, 34, 150},
         {203, 70, 121}, {229, 107, 93}, {248, 148, 65}, {253, 195, 40}, {240, 249, 33}};
+    static const rgb8_t sdr_bluehot_stops[] = {
+        {0, 2, 18}, {0, 8, 58}, {0, 30, 126}, {0, 78, 210}, {0, 150, 248},
+        {28, 214, 250}, {180, 236, 92}, {252, 210, 8}, {255, 124, 0}, {250, 36, 0}};
 
     build_palette_from_stops(s_palette_lut[2], inferno_stops, (int)(sizeof(inferno_stops) / sizeof(inferno_stops[0])));
     build_palette_from_stops(s_palette_lut[3], viridis_stops, (int)(sizeof(viridis_stops) / sizeof(viridis_stops[0])));
     build_palette_from_stops(s_palette_lut[4], magma_stops, (int)(sizeof(magma_stops) / sizeof(magma_stops[0])));
     build_palette_from_stops(s_palette_lut[5], plasma_stops, (int)(sizeof(plasma_stops) / sizeof(plasma_stops[0])));
+    build_palette_from_stops(s_palette_lut[6], sdr_bluehot_stops, (int)(sizeof(sdr_bluehot_stops) / sizeof(sdr_bluehot_stops[0])));
 
     s_palette_lut_init = 1;
 }

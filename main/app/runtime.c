@@ -8,6 +8,7 @@
 #include "cat/service.h"
 #include "spectrum/spectrum.h"
 #include "display/display.h"
+#include "ui/spectrum_ui.h"
 
 static const char *TAG = "runtime";
 
@@ -148,6 +149,7 @@ void app_runtime_shutdown_clients(void)
 
     TickType_t t0 = xTaskGetTickCount();
     spectrum_stop();
+    spectrum_ui_stop();
     TickType_t t1 = xTaskGetTickCount();
     app_runtime_set_stream_state(false, false, false);
     app_runtime_close_all_uac_handles();
@@ -164,6 +166,7 @@ void app_runtime_shutdown_clients(void)
     app_runtime_cdc_uninstall_driver();
     TickType_t t5 = xTaskGetTickCount();
     display_show_status(DISP_MSG_DISCONNECTED);
+    display_set_status_lines(DISP_MSG_DISCONNECTED, "Reconnect USB to continue");
     TickType_t t6 = xTaskGetTickCount();
 
     ESP_LOGI(TAG,

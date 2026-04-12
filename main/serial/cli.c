@@ -101,11 +101,11 @@ static void cmd_sp_palette(const char *line)
         (void)app_settings_set_wf_palette((uint8_t)pal);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma)", (unsigned)cfg.wf_palette);
+        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma 6=sdr_bluehot)", (unsigned)cfg.wf_palette);
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp palette <0..5>");
+        ESP_LOGI(TAG, "[sp] usage: sp palette <0..6>");
     }
 }
 
@@ -223,7 +223,7 @@ static void handle_cli_line(const char *line)
         ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f wfcondense=%.2f wfbeta=%.2f wfbilinear=%u",
                  cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db, (unsigned)cfg.cw_pitch_hz,
                  cfg.wf_gamma, (unsigned)cfg.wf_palette, cfg.spec_alpha, cfg.wf_condense, cfg.wf_temporal_beta, cfg.wf_bilinear ? 1 : 0);
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..5> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1> | sp save | sp reset");
+        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..6> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1> | sp save | sp reset");
     }
 }
 
