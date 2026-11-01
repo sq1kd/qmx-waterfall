@@ -1,8 +1,8 @@
 # mise owns the toolchain pins and the build/flash/release tasks.
 #
 # ESP-IDF has no mise backend: it ships its own installer for the compilers.
-# `mise run setup` provisions it without install.sh:
-#   - clones ESP-IDF into .idf/esp-idf unless IDF_PATH points at a checkout
+# `mise bootstrap` provisions it without install.sh:
+#   - clones ESP-IDF into .idf/esp-idf (or checks out the pinned ref)
 #   - installs the target toolchains with idf_tools.py
 #   - builds the Python environment with uv (IDF_PYTHON_ENV_PATH), pinned by
 #     IDF's constraints file

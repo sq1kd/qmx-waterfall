@@ -2,19 +2,20 @@
 
 Environment and build tasks are managed by [mise](https://mise.jdx.dev).
 
-## Setup
+## Bootstrap
 
 Trust the config once per clone, then provision ESP-IDF and the toolchain:
 
 ```shell
 mise trust
-mise run setup
+mise bootstrap
 ```
 
-`setup` clones ESP-IDF v6.1 into `.idf/esp-idf` (or checks out that ref if the
-directory is present at another version). There is no external ESP-IDF: the
-scripts ignore `IDF_PATH` from your shell, so local and CI builds use the same
-tree. It then:
+`mise bootstrap` installs the tools pinned in `mise.toml` and runs the
+`bootstrap` task. The task clones ESP-IDF v6.1 into `.idf/esp-idf` (or checks
+out that ref if the directory is present at another version). There is no
+external ESP-IDF: the scripts ignore `IDF_PATH` from your shell, so local and CI
+builds use the same tree. It then:
 
 1. installs the esp32s3 compilers with `idf_tools.py install --targets=esp32s3`
    (no `install.sh`, no EIM; toolchains land in `IDF_TOOLS_PATH`, by default
@@ -25,18 +26,14 @@ tree. It then:
 3. syncs the `vendor/esp-usb` submodule and resolves managed components
 
 `python` and `uv` are pinned in `mise.toml`, so the venv is reproducible across
-machines. Re-running `setup` is safe; `uv` and `idf_tools.py` keep existing
-installs.
+machines. Re-running `mise bootstrap` is safe; `uv` and `idf_tools.py` keep
+existing installs.
 
 Everything ESP-IDF lives under `.idf/` (gitignored): the checkout and the uv
 venv. mise sets `IDF_PATH`, `IDF_PYTHON_ENV_PATH` and `IDF_TARGET` for this
 project, and `tools/idf-env.sh` re-asserts the same paths, so an activated
 ESP-IDF shell cannot change what the tasks use. Compilers are shared through
 `IDF_TOOLS_PATH` (default `~/.espressif/tools`).
-
-On a fresh machine, `mise bootstrap` installs the tools from `mise.toml` and
-then runs the same provisioning through a `bootstrap` task that depends on
-`setup`. `mise run setup` remains the repo-local entrypoint.
 
 ## Build and flash
 
@@ -63,5 +60,5 @@ esptool -b 460800 --before default-reset --after hard-reset --chip esp32s3 write
 
 ## Tasks
 
-`mise tasks` lists everything: `setup`, `deps`, `build`, `clean`, `fullclean`,
+`mise tasks` lists everything: `bootstrap`, `deps`, `build`, `clean`, `fullclean`,
 `flash`, `monitor`, `size`, `release`.
