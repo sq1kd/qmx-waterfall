@@ -34,11 +34,9 @@ project, and `tools/idf-env.sh` re-asserts the same paths, so an activated
 ESP-IDF shell cannot change what the tasks use. Compilers are shared through
 `IDF_TOOLS_PATH` (default `~/.espressif/tools`).
 
-## CI
-
-`.github/workflows/ci.yml` runs the same mise tasks, so CI has no separate
-build path: `mise run setup`, `mise run build`, `mise run release`. Only the
-provisioning inputs are cached (`.idf/esp-idf`, `~/.espressif/tools`).
+On a fresh machine, `mise bootstrap` installs the tools from `mise.toml` and
+then runs the same provisioning through a `bootstrap` task that depends on
+`setup`. `mise run setup` remains the repo-local entrypoint.
 
 ## Build and flash
 

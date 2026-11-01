@@ -46,6 +46,10 @@ uv pip install --python "$venv/bin/python" \
 "$root/tools/idf-env.sh" idf.py update-dependencies
 '''
 
+[bootstrap]
+description = "Alias for setup; `mise bootstrap` runs this after installing tools"
+depends = ["setup"]
+
 [deps]
 description = "Re-resolve managed components into dependencies.lock"
 run = "tools/idf-env.sh idf.py update-dependencies"
