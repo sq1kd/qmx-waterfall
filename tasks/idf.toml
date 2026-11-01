@@ -5,20 +5,16 @@ set -euo pipefail
 root={{config_root}}
 ref={{vars.idf_version}}
 target={{vars.target}}
-idf_path="${IDF_PATH:-$root/.idf/esp-idf}"
-venv="${IDF_PYTHON_ENV_PATH:-$root/.idf/venv}"
+idf_path="$root/.idf/esp-idf"
+venv="$root/.idf/venv"
 
-case "$venv" in
-    "$root"/.idf/*) ;;
-    *)
-        echo "Refusing to install a Python environment outside $root/.idf: $venv" >&2
-        exit 1
-        ;;
-esac
-
-if [ ! -f "$idf_path/export.sh" ]; then
+if [ ! -d "$idf_path/.git" ]; then
     echo "Cloning ESP-IDF $ref into $idf_path"
     git clone --depth 1 --branch "$ref" https://github.com/espressif/esp-idf.git "$idf_path"
+elif [ "$(git -C "$idf_path" describe --tags --always 2>/dev/null || true)" != "$ref" ]; then
+    echo "Checking out ESP-IDF $ref in $idf_path"
+    git -C "$idf_path" fetch --depth 1 origin tag "$ref"
+    git -C "$idf_path" checkout -q "$ref"
 fi
 git -C "$idf_path" submodule update --init --recursive --depth 1
 git -C "$root" submodule update --init --recursive

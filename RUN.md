@@ -11,8 +11,10 @@ mise trust
 mise run setup
 ```
 
-`setup` uses `$IDF_PATH` when set (system install, CI image), otherwise clones
-ESP-IDF v6.1 into `.idf/esp-idf`. It then:
+`setup` clones ESP-IDF v6.1 into `.idf/esp-idf` (or checks out that ref if the
+directory is present at another version). There is no external ESP-IDF: the
+scripts ignore `IDF_PATH` from your shell, so local and CI builds use the same
+tree. It then:
 
 1. installs the esp32s3 compilers with `idf_tools.py install --targets=esp32s3`
    (no `install.sh`, no EIM; toolchains land in `IDF_TOOLS_PATH`, by default
@@ -26,10 +28,17 @@ ESP-IDF v6.1 into `.idf/esp-idf`. It then:
 machines. Re-running `setup` is safe; `uv` and `idf_tools.py` keep existing
 installs.
 
-mise sets `IDF_PATH`, `IDF_PYTHON_ENV_PATH` and `IDF_TARGET` for this project,
-so an activated ESP-IDF shell does not change which checkout or venv the tasks
-use. `setup` refuses to create a Python environment outside `.idf/`; toolchains
-are shared through `IDF_TOOLS_PATH` (default `~/.espressif/tools`).
+Everything ESP-IDF lives under `.idf/` (gitignored): the checkout and the uv
+venv. mise sets `IDF_PATH`, `IDF_PYTHON_ENV_PATH` and `IDF_TARGET` for this
+project, and `tools/idf-env.sh` re-asserts the same paths, so an activated
+ESP-IDF shell cannot change what the tasks use. Compilers are shared through
+`IDF_TOOLS_PATH` (default `~/.espressif/tools`).
+
+## CI
+
+`.github/workflows/ci.yml` runs the same mise tasks, so CI has no separate
+build path: `mise run setup`, `mise run build`, `mise run release`. Only the
+provisioning inputs are cached (`.idf/esp-idf`, `~/.espressif/tools`).
 
 ## Build and flash
 

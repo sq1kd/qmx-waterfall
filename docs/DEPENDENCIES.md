@@ -2,6 +2,8 @@
 
 This project uses a mixed dependency model:
 
+- ESP-IDF `v6.1`, checked out into `.idf/esp-idf` by `mise run setup` (no
+  external ESP-IDF is used)
 - ESP-IDF managed components from `components.espressif.com`
 - esp-usb (USB host library + UAC driver) as the `vendor/esp-usb` git submodule
 

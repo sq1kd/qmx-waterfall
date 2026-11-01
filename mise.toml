@@ -17,10 +17,9 @@ python = "{{vars.python}}"
 uv = "0.13.6"
 
 [env]
-# Reuse an externally provided ESP-IDF, else the checkout provisioned by setup.
-IDF_PATH = "{{get_env(name='IDF_PATH', default=config_root ~ '/.idf/esp-idf')}}"
-# uv-managed Python environment; IDF honors this instead of creating its own.
-# Not a `default`: an ambient IDF env must never retarget setup at another venv.
+# Everything ESP-IDF lives in .idf/, so local runs and CI use the same tree.
+# No ambient IDF_PATH/IDF_PYTHON_ENV_PATH is consulted.
+IDF_PATH = "{{config_root}}/.idf/esp-idf"
 IDF_PYTHON_ENV_PATH = "{{config_root}}/.idf/venv"
 IDF_TARGET = "{{vars.target}}"
 
