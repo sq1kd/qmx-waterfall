@@ -63,13 +63,13 @@ static void display_set_status_lines_locked(const char *title, const char *detai
     if (detail && detail[0])
     {
         lv_label_set_text(s_detail, detail);
-        lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_detail, false);
         lv_obj_align(s_detail, LV_ALIGN_CENTER, 0, 10);
     }
     else
     {
         lv_label_set_text(s_detail, "");
-        lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_detail, true);
     }
 }
 
@@ -240,11 +240,11 @@ lv_obj_t *display_show_spectrum(void)
         /* Hide the status label */
         if (s_title != NULL)
         {
-            lv_obj_add_flag(s_title, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_title, true);
         }
         if (s_detail != NULL)
         {
-            lv_obj_add_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(s_detail, true);
         }
 
         /* Black background */
@@ -276,8 +276,8 @@ void display_show_status(const char *msg)
             s_canvas = NULL;
         }
 
-        lv_obj_clear_flag(s_title, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_detail, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_title, false);
+        lv_obj_set_hidden(s_detail, false);
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
         display_set_status_lines_locked(msg ? msg : DISP_MSG_DISCONNECTED, "");
 

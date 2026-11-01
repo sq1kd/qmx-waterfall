@@ -401,7 +401,7 @@ static void ui_menu_show_locked(void)
     ui_overlay_refresh_locked();
     if (s_panel)
     {
-        lv_obj_clear_flag(s_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_panel, false);
     }
     s_menu_visible = true;
 }
@@ -410,7 +410,7 @@ static void ui_menu_hide_locked(void)
 {
     if (s_panel)
     {
-        lv_obj_add_flag(s_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(s_panel, true);
     }
     s_menu_visible = false;
 }
