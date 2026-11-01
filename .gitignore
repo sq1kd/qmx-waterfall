@@ -41,6 +41,8 @@ sdkconfig
 managed_components/
 # If ESP-IDF tools are installed/referenced locally to the project
 .espressif/
+# ESP-IDF checkout provisioned by `mise run setup`
+.idf/
 
 # CMake generated files
 CMakeCache.txt

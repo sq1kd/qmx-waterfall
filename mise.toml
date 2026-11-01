@@ -1,0 +1,76 @@
+# mise handles the toolchain pin and the build/flash/release tasks.
+#
+# ESP-IDF has no mise backend: it ships its own installer for the compiler and
+# toolchain, so `mise run setup` provisions it. Set IDF_PATH to reuse an
+# existing checkout; otherwise ESP-IDF is cloned into .idf/esp-idf.
+
+[vars]
+idf_version = "v6.1"
+target = "esp32s3"
+
+[tools]
+python = "3.14"
+
+[env]
+# Reuse an externally provided ESP-IDF, else the checkout provisioned by setup.
+IDF_PATH = "{{get_env(name='IDF_PATH', default=config_root ~ '/.idf/esp-idf')}}"
+
+[tasks.setup]
+description = "Provision ESP-IDF {{vars.idf_version}} + {{vars.target}} toolchain and submodules"
+run = '''
+set -euo pipefail
+root={{config_root}}
+if [ -n "${IDF_PATH:-}" ] && [ -f "$IDF_PATH/export.sh" ]; then
+    echo "Using existing ESP-IDF: $IDF_PATH"
+else
+    idf_path="$root/.idf/esp-idf"
+    if [ ! -d "$idf_path/.git" ]; then
+        git clone --depth 1 --branch {{vars.idf_version}} https://github.com/espressif/esp-idf.git "$idf_path"
+    fi
+    git -C "$idf_path" submodule update --init --recursive --depth 1
+    (cd "$idf_path" && ./install.sh {{vars.target}})
+fi
+git -C "$root" submodule update --init --recursive
+"$root/tools/idf-env.sh" idf.py --version
+"$root/tools/idf-env.sh" idf.py update-dependencies
+'''
+
+[tasks.deps]
+description = "Re-resolve managed components into dependencies.lock"
+run = "tools/idf-env.sh idf.py update-dependencies"
+
+[tasks.build]
+description = "Build firmware for {{vars.target}}"
+run = "tools/idf-env.sh idf.py build"
+
+[tasks.clean]
+description = "Remove build outputs"
+run = "tools/idf-env.sh idf.py clean"
+
+[tasks.fullclean]
+description = "Remove the whole build directory"
+run = "tools/idf-env.sh idf.py fullclean"
+
+[tasks.flash]
+description = "Flash the firmware (ESPPORT selects the serial port)"
+run = 'exec tools/idf-env.sh idf.py ${ESPPORT:+-p "$ESPPORT"} flash'
+
+[tasks.monitor]
+description = "Open the serial monitor (ESPPORT selects the serial port)"
+run = 'exec tools/idf-env.sh idf.py ${ESPPORT:+-p "$ESPPORT"} monitor'
+
+[tasks.size]
+description = "Print firmware size information"
+run = "tools/idf-env.sh idf.py size"
+
+[tasks.release]
+description = "Build and merge bootloader/partition/app into a single flashable image"
+run = '''
+set -euo pipefail
+root={{config_root}}
+"$root/tools/idf-env.sh" idf.py build
+version="$(git -C "$root" describe --tags --always --dirty)"
+mkdir -p "$root/dist"
+"$root/tools/idf-env.sh" idf.py merge-bin -o "$root/dist/qmx-waterfall-$version.bin" -f raw
+echo "Release image: dist/qmx-waterfall-$version.bin"
+'''

@@ -1,0 +1,3 @@
+[submodule "vendor/esp-usb"]
+	path = vendor/esp-usb
+	url = https://github.com/espressif/esp-usb.git

@@ -3,30 +3,31 @@
 This project uses a mixed dependency model:
 
 - ESP-IDF managed components from `components.espressif.com`
-- Vendored USB stack from `vendor/esp-usb`
+- esp-usb (USB host library + UAC driver) as the `vendor/esp-usb` git submodule
 
-## Vendored esp-usb pin
+## esp-usb pin
 
-- Path: `vendor/esp-usb`
+- Path: `vendor/esp-usb` (git submodule: `https://github.com/espressif/esp-usb.git`)
 - Current pin: `2e2032b` (esp-usb `master`, host `usb` 1.6.0, `usb_host_uac` 1.5.0)
 - ESP-IDF: `v6.1`
 
-The project resolves these components from the vendored tree via `main/idf_component.yml`:
+The project resolves these components from the submodule via `main/idf_component.yml`:
 
 - `espressif/usb` -> `../vendor/esp-usb/host/usb`
 - `espressif/usb_host_uac` -> `../vendor/esp-usb/host/class/uac/usb_host_uac`
 
 ## Update process
 
-1. Update vendored repo commit in `vendor/esp-usb`.
-2. Re-run dependency resolution:
-   - `idf.py update-dependencies`
-   - `idf.py reconfigure`
-3. Build and run unplug/replug regression checks.
+1. Move the submodule to the new commit and stage it:
+   - `git -C vendor/esp-usb fetch origin`
+   - `git -C vendor/esp-usb checkout --detach <commit>`
+2. Update the pin above.
+3. Re-run dependency resolution: `mise run deps`.
+4. Build (`mise run build`) and run unplug/replug regression checks.
 
 ## Quick check
 
-Print current vendored commit:
+Print current submodule commit:
 
 ```shell
 git -C vendor/esp-usb rev-parse --short HEAD
