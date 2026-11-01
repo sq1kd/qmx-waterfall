@@ -12,8 +12,24 @@ mise run setup
 ```
 
 `setup` uses `$IDF_PATH` when set (system install, CI image), otherwise clones
-ESP-IDF v6.1 into `.idf/esp-idf`. It installs the esp32s3 toolchain, syncs the
-`vendor/esp-usb` submodule and resolves managed components.
+ESP-IDF v6.1 into `.idf/esp-idf`. It then:
+
+1. installs the esp32s3 compilers with `idf_tools.py install --targets=esp32s3`
+   (no `install.sh`, no EIM; toolchains land in `IDF_TOOLS_PATH`, by default
+   `~/.espressif/tools`)
+2. creates the Python environment with `uv` at `.idf/venv` and installs IDF's
+   `requirements.core.txt` against IDF's constraints file
+   (`IDF_PYTHON_ENV_PATH`), instead of `idf_tools.py install-python-env`
+3. syncs the `vendor/esp-usb` submodule and resolves managed components
+
+`python` and `uv` are pinned in `mise.toml`, so the venv is reproducible across
+machines. Re-running `setup` is safe; `uv` and `idf_tools.py` keep existing
+installs.
+
+mise sets `IDF_PATH`, `IDF_PYTHON_ENV_PATH` and `IDF_TARGET` for this project,
+so an activated ESP-IDF shell does not change which checkout or venv the tasks
+use. `setup` refuses to create a Python environment outside `.idf/`; toolchains
+are shared through `IDF_TOOLS_PATH` (default `~/.espressif/tools`).
 
 ## Build and flash
 

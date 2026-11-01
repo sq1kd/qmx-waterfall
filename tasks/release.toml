@@ -1,0 +1,11 @@
+[release]
+description = "Build and merge bootloader/partition/app into a single flashable image"
+run = '''
+set -euo pipefail
+root={{config_root}}
+"$root/tools/idf-env.sh" idf.py build
+version="$(git -C "$root" describe --tags --always --dirty)"
+mkdir -p "$root/dist"
+"$root/tools/idf-env.sh" idf.py merge-bin -o "$root/dist/qmx-waterfall-$version.bin" -f raw
+echo "Release image: dist/qmx-waterfall-$version.bin"
+'''

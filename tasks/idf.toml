@@ -1,0 +1,79 @@
+[setup]
+description = "Provision ESP-IDF {{vars.idf_version}}, {{vars.target}} toolchains, uv venv and submodules"
+run = '''
+set -euo pipefail
+root={{config_root}}
+ref={{vars.idf_version}}
+target={{vars.target}}
+idf_path="${IDF_PATH:-$root/.idf/esp-idf}"
+venv="${IDF_PYTHON_ENV_PATH:-$root/.idf/venv}"
+
+case "$venv" in
+    "$root"/.idf/*) ;;
+    *)
+        echo "Refusing to install a Python environment outside $root/.idf: $venv" >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -f "$idf_path/export.sh" ]; then
+    echo "Cloning ESP-IDF $ref into $idf_path"
+    git clone --depth 1 --branch "$ref" https://github.com/espressif/esp-idf.git "$idf_path"
+fi
+git -C "$idf_path" submodule update --init --recursive --depth 1
+git -C "$root" submodule update --init --recursive
+
+python "$idf_path/tools/idf_tools.py" install --targets="$target"
+
+constraints="$(
+    python - "$idf_path" <<'PY' | tail -n 1
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[1], "tools"))
+import idf_tools  # noqa: E402
+
+idf_tools.g.idf_path = sys.argv[1]
+idf_tools.g.idf_tools_path = os.environ.get("IDF_TOOLS_PATH") or os.path.expanduser(
+    idf_tools.IDF_TOOLS_PATH_DEFAULT
+)
+print(idf_tools.get_constraints(idf_tools.get_idf_version()))
+PY
+)"
+
+uv venv --allow-existing --python {{vars.python}} "$venv"
+uv pip install --python "$venv/bin/python" \
+    -r "$idf_path/tools/requirements/requirements.core.txt" \
+    -c "$constraints"
+
+"$root/tools/idf-env.sh" idf.py --version
+"$root/tools/idf-env.sh" idf.py update-dependencies
+'''
+
+[deps]
+description = "Re-resolve managed components into dependencies.lock"
+run = "tools/idf-env.sh idf.py update-dependencies"
+
+[build]
+description = "Build firmware for {{vars.target}}"
+run = "tools/idf-env.sh idf.py build"
+
+[clean]
+description = "Remove build outputs"
+run = "tools/idf-env.sh idf.py clean"
+
+[fullclean]
+description = "Remove the whole build directory"
+run = "tools/idf-env.sh idf.py fullclean"
+
+[flash]
+description = "Flash the firmware (ESPPORT selects the serial port)"
+run = 'exec tools/idf-env.sh idf.py ${ESPPORT:+-p "$ESPPORT"} flash'
+
+[monitor]
+description = "Open the serial monitor (ESPPORT selects the serial port)"
+run = 'exec tools/idf-env.sh idf.py ${ESPPORT:+-p "$ESPPORT"} monitor'
+
+[size]
+description = "Print firmware size information"
+run = "tools/idf-env.sh idf.py size"
