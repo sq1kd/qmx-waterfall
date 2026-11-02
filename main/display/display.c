@@ -297,7 +297,11 @@ void display_init(void)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io,
         .panel_handle = panel,
-        .buffer_size = DISP_V_RES * 40,
+        /* One whole frame per draw buffer, in PSRAM (S3 PSRAM is DMA
+         * capable): the canvas is flushed in a single SPI burst instead of
+         * two 40-row chunks, so the panel shows at most one seam per frame
+         * instead of two with a render gap in between. */
+        .buffer_size = DISP_H_RES * DISP_V_RES,
         .double_buffer = false,
         .hres = DISP_H_RES, /* 76  — physical portrait width  */
         .vres = DISP_V_RES, /* 284 — physical portrait height */
@@ -310,6 +314,9 @@ void display_init(void)
         },
         .flags = {
             .swap_bytes = true,
+            .buff_dma = true,
+            .buff_spiram = true,
+            .full_refresh = true,
         },
     };
     s_disp = lvgl_port_add_disp(&disp_cfg);
