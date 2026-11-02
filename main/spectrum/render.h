@@ -9,11 +9,12 @@ uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b);
 
 int16_t spectrum_db_to_q8(float db);
 
-/* Spectrum trace on top of the canvas. peak_vals may be NULL. */
+/* Spectrum trace on top of the canvas. trace_vals and peak_vals may each be
+ * NULL to draw only the other. */
 void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                                      int disp_w,
                                      int spec_h,
-                                     const float *db_vals,
+                                     const float *trace_vals,
                                      const float *peak_vals,
                                      float db_floor,
                                      float db_ceil,

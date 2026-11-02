@@ -34,7 +34,7 @@ typedef enum
     UI_SET_CW_PITCH,
     UI_SET_WF_PALETTE,
     UI_SET_WF_SPEED,
-    UI_SET_WF_PEAK,
+    UI_SET_WF_MODE,
     UI_SET_COUNT,
 } ui_setting_id_t;
 
@@ -93,8 +93,8 @@ static int ui_setting_to_slider(const app_settings_t *cfg, ui_setting_id_t id)
         return (int)cfg->wf_palette;
     case UI_SET_WF_SPEED:
         return (int)(cfg->speed_lps * 100.0f + 0.5f);
-    case UI_SET_WF_PEAK:
-        return cfg->peak ? 1 : 0;
+    case UI_SET_WF_MODE:
+        return (int)cfg->spec_mode;
     default:
         return 0;
     }
@@ -118,8 +118,8 @@ static const char *ui_setting_name(ui_setting_id_t id)
         return "Palette";
     case UI_SET_WF_SPEED:
         return "Speed";
-    case UI_SET_WF_PEAK:
-        return "Peak";
+    case UI_SET_WF_MODE:
+        return "Mode";
     default:
         return "Setting";
     }
@@ -157,9 +157,9 @@ static void ui_setting_range(ui_setting_id_t id, int *min, int *max)
         *min = 100;
         *max = 2500;
         break;
-    case UI_SET_WF_PEAK:
+    case UI_SET_WF_MODE:
         *min = 0;
-        *max = 1;
+        *max = 3;
         break;
     default:
         *min = 0;
@@ -219,8 +219,22 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
     case UI_SET_WF_SPEED:
         snprintf(buf, n, "%.1f l/s", cfg->speed_lps);
         break;
-    case UI_SET_WF_PEAK:
-        snprintf(buf, n, "%s", cfg->peak ? "On" : "Off");
+    case UI_SET_WF_MODE:
+        switch (cfg->spec_mode)
+        {
+        case 0:
+            snprintf(buf, n, "Trace");
+            break;
+        case 1:
+            snprintf(buf, n, "Trace+peak");
+            break;
+        case 2:
+            snprintf(buf, n, "Peak");
+            break;
+        default:
+            snprintf(buf, n, "Off");
+            break;
+        }
         break;
     default:
         snprintf(buf, n, "-");
@@ -260,10 +274,10 @@ static void ui_apply_delta(ui_setting_id_t id, int dir)
         (void)app_settings_set_wf_palette((uint8_t)clamp_i((int)cfg.wf_palette + dir, 0, 6));
         break;
     case UI_SET_WF_SPEED:
-        (void)app_settings_set_speed(clamp_f(cfg.speed_lps + 0.5f * (float)dir, 1.0f, 25.0f));
+        (void)app_settings_set_speed(spectrum_speed_step(cfg.speed_lps, dir));
         break;
-    case UI_SET_WF_PEAK:
-        (void)app_settings_set_peak(dir > 0);
+    case UI_SET_WF_MODE:
+        (void)app_settings_set_spec_mode((uint8_t)clamp_i((int)cfg.spec_mode + dir, 0, 3));
         break;
     default:
         break;

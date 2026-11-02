@@ -73,7 +73,7 @@ static inline uint8_t q8_to_palette_index(int16_t v, int32_t floor_q8, uint32_t 
 void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                                      int disp_w,
                                      int spec_h,
-                                     const float *db_vals,
+                                     const float *trace_vals,
                                      const float *peak_vals,
                                      float db_floor,
                                      float db_ceil,
@@ -81,7 +81,7 @@ void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                                      uint16_t fg,
                                      uint16_t peak_fg)
 {
-    if (!canvas_buf || !db_vals || disp_w <= 0 || spec_h <= 0)
+    if (!canvas_buf || disp_w <= 0 || spec_h <= 0)
         return;
 
     for (int i = 0; i < spec_h * disp_w; i++)
@@ -93,25 +93,29 @@ void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
     int prev_y = -1;
     for (int px = 0; px < disp_w; px++)
     {
-        float norm = (db_vals[px] - db_floor) / dyn_db;
-        if (norm < 0.0f)
-            norm = 0.0f;
-        if (norm > 1.0f)
-            norm = 1.0f;
-        int y = span_y - (int)(norm * (float)span_y);
+        int y = span_y;
+        if (trace_vals)
+        {
+            float norm = (trace_vals[px] - db_floor) / dyn_db;
+            if (norm < 0.0f)
+                norm = 0.0f;
+            if (norm > 1.0f)
+                norm = 1.0f;
+            y = span_y - (int)(norm * (float)span_y);
 
-        if (prev_y != -1)
-        {
-            int y0 = prev_y < y ? prev_y : y;
-            int y1 = prev_y < y ? y : prev_y;
-            for (int yy = y0; yy <= y1; yy++)
-                canvas_buf[yy * disp_w + px] = fg;
+            if (prev_y != -1)
+            {
+                int y0 = prev_y < y ? prev_y : y;
+                int y1 = prev_y < y ? y : prev_y;
+                for (int yy = y0; yy <= y1; yy++)
+                    canvas_buf[yy * disp_w + px] = fg;
+            }
+            else
+            {
+                canvas_buf[y * disp_w + px] = fg;
+            }
+            prev_y = y;
         }
-        else
-        {
-            canvas_buf[y * disp_w + px] = fg;
-        }
-        prev_y = y;
 
         if (peak_vals)
         {

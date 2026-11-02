@@ -156,9 +156,46 @@ static void test_peak_marker(void)
     }
 }
 
+/* With the spectrum off the strip shrinks to SPEC_H_MIN and the waterfall
+ * takes the rest; peak-only draws a dot and no trace. */
+static void test_modes_and_geometry(void)
+{
+    enum { W = 4, H = 76, SH_MIN = 13, RING = H - SH_MIN };
+    static uint16_t canvas[W * H];
+    static int16_t ring[RING * W];
+    uint32_t idx = 0;
+    float line[W] = {-80.0f, -80.0f, -80.0f, -80.0f};
+    const uint16_t bg = spectrum_rgb565(0, 0, 8);
+    const uint16_t fg = spectrum_rgb565(0, 255, 0);
+    const uint16_t pk = spectrum_rgb565(255, 224, 64);
+
+    for (int i = 0; i < RING * W; i++)
+        ring[i] = spectrum_db_to_q8(-140.0f);
+    for (int n = 0; n < RING + 7; n++) /* wrap the ring */
+        spectrum_store_wf_row(ring, &idx, RING, W, line);
+
+    const int wf_h = H - SH_MIN;
+    spectrum_draw_spectrum_strip_db(canvas, W, SH_MIN, NULL, NULL, -120.0f, 0.0f, bg, fg, pk);
+    spectrum_draw_waterfall(canvas, W, wf_h, SH_MIN, ring, idx, RING, -120.0f, 0.0f, 0);
+
+    for (int r = 0; r < SH_MIN; r++)
+        for (int x = 0; x < W; x++)
+            CHECK(canvas[r * W + x] == bg, "mode off: strip row %d is not empty", r);
+    for (int r = SH_MIN; r < H; r++)
+        for (int x = 0; x < W; x++)
+            CHECK(canvas[r * W + x] != bg, "mode off: waterfall row %d was not drawn", r);
+
+    float peak[W] = {40.0f, 40.0f, 40.0f, 40.0f};
+    spectrum_draw_spectrum_strip_db(canvas, W, 10, NULL, peak, -120.0f, 0.0f, bg, fg, pk);
+    CHECK(canvas[0] == pk, "peak-only: no peak dot at the ceiling");
+    for (int i = 0; i < W * 10; i++)
+        CHECK(canvas[i] != fg, "peak-only: trace was drawn without trace data");
+}
+
 int main(void)
 {
     test_scroll_is_one_row();
+    test_modes_and_geometry();
     test_level_mapping();
     test_peak_marker();
 

@@ -14,17 +14,21 @@
 #define DISP_W SPECTRUM_IQ_COLUMNS
 #define DISP_H 76
 
-/* Layout: spectrum line plot on top, waterfall below */
+/* Layout: spectrum line plot on top, waterfall below. With the spectrum off
+ * the strip keeps room for the filter box and the frequency scale. */
 #define SPEC_H 25
-#define WF_DISP_H 51
-#define WF_STORE_H WF_DISP_H /* one stored line per displayed row */
-#define WF_Y0 SPEC_H
+#define SPEC_H_MIN 13
+#define WF_STORE_H (DISP_H - SPEC_H_MIN) /* ring sized for the tallest waterfall */
 
 /* Read buffer: enough for ~20 ms of 24-bit stereo @ 48 kHz */
 #define READ_BUF_BYTES 6144
 
 /* Peak hold decay, dB per second. */
 #define SPECTRUM_PEAK_DECAY_DB_PER_S 12.0f
+
+/* Time constant of the trace smoothing (display only; the waterfall keeps the
+ * per-line average). */
+#define SPECTRUM_TRACE_TAU_S 0.25f
 
 typedef struct
 {
@@ -62,11 +66,14 @@ typedef struct
     /* Power accumulated since the last emitted line */
     float line_acc[DISP_W];
     uint32_t line_acc_n;
-    /* dB of the most recent line (trace + peak source) */
+    /* dB of the most recent line (waterfall + peak source) */
     float line_db[DISP_W];
+    /* Smoothed trace (display only) */
+    float trace_db[DISP_W];
+    float trace_alpha;
     float peak_db[DISP_W];
-    bool peak_enabled;
     float peak_decay_db;
+    uint8_t spec_mode;
 
     /* Waterfall ring: q8 dB, one row per emitted line */
     int16_t *wf_db;
@@ -75,12 +82,11 @@ typedef struct
     float wf_db_ceil;
     uint8_t wf_palette;
 
-    /* Line cadence: driven by audio time (the FFT frames), not wall time,
-     * so the waterfall advances exactly one row per line even when the USB
-     * data arrives in bursts. */
+    /* Line cadence: every line averages exactly line_group FFTs, so the
+     * rendered noise variance (and colour) is identical line to line. */
     float speed_lps;
-    uint64_t line_period_us;
-    uint64_t line_acc_us;
+    uint32_t line_group;
+    uint32_t line_fft_count;
 
     uint8_t fft_impl;
 
@@ -107,7 +113,6 @@ typedef struct
     int16_t iq_db[DISP_W];
 
     volatile bool history_reset_pending;
-    bool progress_finished;
 } spectrum_state_t;
 
 extern spectrum_state_t s;

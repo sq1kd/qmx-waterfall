@@ -47,10 +47,15 @@ void display_show_progress(void);
 void display_stage(disp_stage_t stage, disp_stage_state_t state, const char *detail);
 
 /*
- * Called once the waterfall has produced its first frame: marks the
- * spectrum stage done and hides the checklist.
+ * Marks the spectrum stage done and hides the checklist. Returns false when
+ * the LVGL port lock could not be taken, in which case nothing changed and
+ * the call should be retried (the spectrum pipeline retries every frame
+ * while display_progress_active() is true).
  */
-void display_progress_finish(void);
+bool display_progress_finish(void);
+
+/* True while the startup checklist is on screen. */
+bool display_progress_active(void);
 
 /*
  * Initialise SPI bus, ST7789P3 panel and LVGL.

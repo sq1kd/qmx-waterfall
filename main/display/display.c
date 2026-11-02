@@ -73,7 +73,7 @@ static lv_obj_t *s_stage_marker[DISP_STAGE_COUNT];
 static lv_obj_t *s_stage_detail[DISP_STAGE_COUNT];
 static char s_stage_detail_buf[DISP_STAGE_COUNT][DISP_STAGE_DETAIL_LEN];
 static disp_stage_state_t s_stage_state[DISP_STAGE_COUNT];
-static bool s_progress_visible = false;
+static volatile bool s_progress_visible = false;
 static bool s_progress_finished = false;
 
 static const char *const s_stage_label[DISP_STAGE_COUNT] = {
@@ -529,11 +529,11 @@ void display_stage(disp_stage_t stage, disp_stage_state_t state, const char *det
     lvgl_port_unlock();
 }
 
-void display_progress_finish(void)
+bool display_progress_finish(void)
 {
     if (!lvgl_port_lock(100))
     {
-        return;
+        return false;
     }
 
     if (s_progress != NULL)
@@ -550,4 +550,10 @@ void display_progress_finish(void)
     s_progress_finished = true;
 
     lvgl_port_unlock();
+    return true;
+}
+
+bool display_progress_active(void)
+{
+    return s_progress_visible;
 }

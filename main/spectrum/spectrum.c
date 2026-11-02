@@ -38,7 +38,7 @@ static uint32_t s_init_failures;
 static uint8_t s_fft_impl = SPECTRUM_FFT_AES3_AVAILABLE ? SPECTRUM_FFT_AES3 : SPECTRUM_FFT_ANSI;
 
 #define SPECTRUM_SPEED_MIN 1.0f
-#define SPECTRUM_SPEED_MAX 25.0f
+#define SPECTRUM_SPEED_MAX 50.0f
 
 static bool spectrum_lock(TickType_t timeout)
 {
@@ -57,10 +57,78 @@ static void spectrum_unlock(void)
         xSemaphoreGive(s_lifecycle_mutex);
 }
 
-static void spectrum_refresh_peak_decay(void)
+static float spectrum_fft_rate(void)
 {
+    if (s.sample_freq == 0 || s.cfg.fft_size == 0)
+        return 0.0f;
+    return (float)s.sample_freq / (float)s.cfg.fft_size;
+}
+
+/* One line always averages a whole number of FFTs; pick the group that lands
+ * closest to the requested rate. */
+float spectrum_snap_speed(float lines_per_sec)
+{
+    if (lines_per_sec < SPECTRUM_SPEED_MIN)
+        lines_per_sec = SPECTRUM_SPEED_MIN;
+    if (lines_per_sec > SPECTRUM_SPEED_MAX)
+        lines_per_sec = SPECTRUM_SPEED_MAX;
+
+    float rate = spectrum_fft_rate();
+    if (rate <= 0.0f)
+        return lines_per_sec;
+
+    float group = lroundf(rate / lines_per_sec);
+    if (group < 2.0f)
+        group = 2.0f; /* keeps the canvas push below ~50/s at 512/48k */
+    return rate / group;
+}
+
+float spectrum_speed_step(float lines_per_sec, int dir)
+{
+    float rate = spectrum_fft_rate();
+    if (rate <= 0.0f)
+        return lines_per_sec;
+
+    float group = lroundf(rate / (lines_per_sec > 0.0f ? lines_per_sec : 1.0f));
+    if (group < 2.0f)
+        group = 2.0f;
+    group += (dir > 0) ? -1.0f : 1.0f;
+    if (group < 2.0f)
+        group = 2.0f;
+    if (group > 500.0f)
+        group = 500.0f;
+
+    float speed = rate / group;
+    if (speed < SPECTRUM_SPEED_MIN)
+        speed = SPECTRUM_SPEED_MIN;
+    return speed;
+}
+
+/* Derive the line grouping, peak decay and trace smoothing from the current
+ * speed and FFT rate. */
+static void spectrum_apply_line_timing(void)
+{
+    float rate = spectrum_fft_rate();
+    if (rate > 0.0f)
+    {
+        s.speed_lps = spectrum_snap_speed(s.speed_lps);
+        uint32_t group = (uint32_t)lroundf(rate / s.speed_lps);
+        if (group < 2)
+            group = 2;
+        s.line_group = group;
+    }
+    else
+    {
+        s.line_group = 1;
+    }
+
     float speed = s.speed_lps > 0.0f ? s.speed_lps : 1.0f;
     s.peak_decay_db = SPECTRUM_PEAK_DECAY_DB_PER_S / speed;
+    s.trace_alpha = 1.0f - expf(-(1.0f / speed) / SPECTRUM_TRACE_TAU_S);
+    if (s.trace_alpha < 0.02f)
+        s.trace_alpha = 0.02f;
+    if (s.trace_alpha > 0.9f)
+        s.trace_alpha = 0.9f;
 }
 
 static void spectrum_cleanup_state(spectrum_state_t *st)
@@ -205,7 +273,7 @@ void spectrum_set_wf_palette(uint8_t palette)
     ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
 }
 
-void spectrum_set_speed(float lines_per_sec)
+float spectrum_set_speed(float lines_per_sec)
 {
     if (lines_per_sec < SPECTRUM_SPEED_MIN)
         lines_per_sec = SPECTRUM_SPEED_MIN;
@@ -213,21 +281,24 @@ void spectrum_set_speed(float lines_per_sec)
         lines_per_sec = SPECTRUM_SPEED_MAX;
 
     s.speed_lps = lines_per_sec;
-    s.line_period_us = (uint64_t)(1000000.0f / lines_per_sec);
-    spectrum_refresh_peak_decay();
-    ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.2f s history)", lines_per_sec,
-             (float)WF_DISP_H / lines_per_sec);
+    spectrum_apply_line_timing();
+    ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%lu fft/line, %.1f s history)",
+             s.speed_lps, (unsigned long)s.line_group,
+             (float)(DISP_H - SPEC_H) / s.speed_lps);
+    return s.speed_lps;
 }
 
-void spectrum_set_peak(bool enabled)
+void spectrum_set_spec_mode(uint8_t mode)
 {
-    s.peak_enabled = enabled;
-    if (!enabled)
+    if (mode > SPECTRUM_MODE_OFF)
+        mode = SPECTRUM_MODE_TRACE_PEAK;
+    s.spec_mode = mode;
+    if (mode != SPECTRUM_MODE_TRACE_PEAK && mode != SPECTRUM_MODE_PEAK)
     {
         for (int i = 0; i < DISP_W; i++)
-            s.peak_db[i] = -32767.0f / SPECTRUM_DB_Q8;
+            s.peak_db[i] = s.wf_db_floor;
     }
-    ESP_LOGI(TAG, "[sp] peak=%u", enabled ? 1u : 0u);
+    ESP_LOGI(TAG, "[sp] mode=%u (0 trace, 1 trace+peak, 2 peak, 3 off)", mode);
 }
 
 uint8_t spectrum_get_fft_impl(void)
@@ -374,6 +445,7 @@ void spectrum_get_stats(spectrum_stats_t *out)
     out->run_us = s.st_run_us_start ? (uint64_t)(esp_timer_get_time() - (int64_t)s.st_run_us_start) : 0;
     out->sample_freq = s.sample_freq;
     out->frame_bytes = (uint32_t)s.bytes_per_sample * s.channels;
+    out->line_group = s.line_group;
     out->draw_us_last = s.st_draw_us_last;
     out->draw_us_avg = s.st_draw_us_avg;
     out->draw_us_max = s.st_draw_us_max;
@@ -483,19 +555,19 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     s.wf_palette = 4;
     s.view_mode = 0;
     s.cw_pitch_hz = 700;
-    s.peak_enabled = true;
+    s.spec_mode = SPECTRUM_MODE_TRACE_PEAK;
     s.fft_impl = s_fft_impl;
     s.speed_lps = cfg->lines_per_sec;
     if (s.speed_lps < SPECTRUM_SPEED_MIN)
         s.speed_lps = SPECTRUM_SPEED_MIN;
     if (s.speed_lps > SPECTRUM_SPEED_MAX)
         s.speed_lps = SPECTRUM_SPEED_MAX;
-    s.line_period_us = (uint64_t)(1000000.0f / s.speed_lps);
-    spectrum_refresh_peak_decay();
+    spectrum_apply_line_timing();
 
     for (int i = 0; i < DISP_W; i++)
     {
         s.line_db[i] = s.wf_db_floor;
+        s.trace_db[i] = s.wf_db_floor;
         s.peak_db[i] = s.wf_db_floor;
     }
 
@@ -583,8 +655,9 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         spectrum_unlock();
     }
 
-    ESP_LOGI(TAG, "Spectrum init OK - FFT %u, %.1f lines/s, wf %dx%d q8 (%.1f KB, internal)",
-             cfg->fft_size, s.speed_lps, DISP_W, WF_DISP_H, (float)wf_bytes / 1024.0f);
+    ESP_LOGI(TAG, "Spectrum init OK - FFT %u, %.1f lines/s x %lu fft, ring %dx%d q8 (%.1f KB, internal)",
+             cfg->fft_size, s.speed_lps, (unsigned long)s.line_group,
+             DISP_W, WF_STORE_H, (float)wf_bytes / 1024.0f);
     return ESP_OK;
 }
 
@@ -595,6 +668,7 @@ void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution, uint32
     s.sample_freq = sample_freq;
     s.bytes_per_sample = (uint8_t)((bit_resolution + 7) / 8);
     spectrum_update_marker_px();
+    spectrum_apply_line_timing();
 }
 
 void spectrum_notify_rx(uac_host_device_handle_t handle)

@@ -13,6 +13,12 @@
 /* Number of dB columns the spectrum is rendered into (display width). */
 #define SPECTRUM_IQ_COLUMNS 284
 
+/* What the strip above the waterfall shows. */
+#define SPECTRUM_MODE_TRACE 0      /* trace only                  */
+#define SPECTRUM_MODE_TRACE_PEAK 1 /* trace + peak hold           */
+#define SPECTRUM_MODE_PEAK 2       /* peak hold only              */
+#define SPECTRUM_MODE_OFF 3        /* nothing (waterfall grows)   */
+
 /*
  * spectrum display configuration.
  * All fields have defaults applied by spectrum_default_cfg().
@@ -62,8 +68,16 @@ void spectrum_set_level_offset_db(float offset_db);
 void spectrum_set_view_mode(uint8_t mode);
 void spectrum_set_wf_range(float floor_db, float ceil_db);
 void spectrum_set_wf_palette(uint8_t palette);
-void spectrum_set_speed(float lines_per_sec); /* 1..25 waterfall lines/s */
-void spectrum_set_peak(bool enabled);
+/* Returns the effective rate: lines always average a whole number of
+ * FFTs, so the request is snapped to fft_rate / N. */
+float spectrum_set_speed(float lines_per_sec); /* 1..50 waterfall lines/s */
+void spectrum_set_spec_mode(uint8_t mode);
+
+/* Waterfall lines always average a whole number of FFTs, so the achievable
+ * rates are fft_rate / N. These snap a request to the nearest one and walk
+ * the achievable set. */
+float spectrum_snap_speed(float lines_per_sec);
+float spectrum_speed_step(float lines_per_sec, int dir);
 
 /* FFT implementation selection (SPECTRUM_FFT_ANSI / SPECTRUM_FFT_AES3). */
 uint8_t spectrum_get_fft_impl(void);
@@ -81,6 +95,7 @@ typedef struct
     uint32_t lines;
     uint32_t draws;
     uint32_t draws_skipped;
+    uint32_t line_group; /* FFTs averaged into one line */
     uint32_t read_calls;
     uint64_t bytes_read;
     uint64_t audio_us; /* audio time contained in bytes_read */

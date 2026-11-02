@@ -103,29 +103,46 @@ static void cli_sp_speed(const char *line)
         (void)app_settings_set_speed(lps);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.1f s of history)", cfg.speed_lps,
-                 51.0f / cfg.speed_lps);
+        ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.1f s of history)",
+                 cfg.speed_lps, (float)(76 - 25) / cfg.speed_lps);
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp speed <1..25>");
+        ESP_LOGI(TAG, "[sp] usage: sp speed <1..50> (snapped to fft_rate/N)");
     }
 }
 
-static void cli_sp_peak(const char *line)
+static const char *const s_spec_mode_name[] = {"trace", "trace+peak", "peak", "off"};
+
+static void cli_sp_mode(const char *line)
 {
-    int en = -1;
-    if (sscanf(line, "sp peak %d", &en) == 1)
+    char arg[16] = {0};
+    if (sscanf(line, "sp mode %15s", arg) == 1)
     {
-        (void)app_settings_set_peak(en != 0);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] peak=%u", cfg.peak ? 1u : 0u);
+        int mode = -1;
+        for (int i = 0; i < 4; i++)
+        {
+            if (strcmp(arg, s_spec_mode_name[i]) == 0)
+                mode = i;
+        }
+        if (mode < 0 && sscanf(arg, "%d", &mode) != 1)
+            mode = -1;
+
+        if (mode >= 0 && mode <= 3)
+        {
+            (void)app_settings_set_spec_mode((uint8_t)mode);
+            app_settings_t cfg;
+            app_settings_get(&cfg);
+            ESP_LOGI(TAG, "[sp] mode=%s", s_spec_mode_name[cfg.spec_mode]);
+            return;
+        }
+        ESP_LOGI(TAG, "[sp] usage: sp mode <trace|trace+peak|peak|off>");
+        return;
     }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp peak <0|1>");
-    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] mode=%s", s_spec_mode_name[cfg.spec_mode]);
 }
 
 static void cli_sp_stats(const char *line)
@@ -141,9 +158,10 @@ static void cli_sp_stats(const char *line)
         deficits_x100 = (int)((deficit * 10000ULL) / expected);
     }
 
-    ESP_LOGI(TAG, "[sp] stats: fft=%lu lines=%lu draws=%lu skipped=%lu",
+    ESP_LOGI(TAG, "[sp] stats: fft=%lu lines=%lu (%lu fft/line) draws=%lu skipped=%lu",
              (unsigned long)st.fft_frames, (unsigned long)st.lines,
-             (unsigned long)st.draws, (unsigned long)st.draws_skipped);
+             (unsigned long)st.line_group, (unsigned long)st.draws,
+             (unsigned long)st.draws_skipped);
     ESP_LOGI(TAG, "[sp] audio: read=%lluB in %lluB expected (%d.%02d%% missing), calls=%lu, %lums audio / %lums wall",
              (unsigned long long)st.bytes_read, (unsigned long long)expected,
              deficits_x100 / 100, deficits_x100 % 100,
@@ -303,12 +321,13 @@ static void cli_sp_status(const char *line)
     (void)line;
     app_settings_t cfg;
     app_settings_get(&cfg);
-    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%.1f peak=%u fft=%s",
+    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%.1f mode=%s fft=%s",
              cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db,
              (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette, cfg.speed_lps,
-             cfg.peak ? 1u : 0u, spectrum_get_fft_impl() ? "aes3" : "ansi");
+             s_spec_mode_name[cfg.spec_mode < 4 ? cfg.spec_mode : 0],
+             spectrum_get_fft_impl() ? "aes3" : "ansi");
     ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | "
-                  "sp palette <0..6> | sp speed <1..25> | sp peak <0|1> | sp stats [reset] | "
+                  "sp palette <0..6> | sp speed <1..50> | sp mode <trace|trace+peak|peak|off> | sp stats [reset] | "
                   "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp log <tag> <level> | sp save | sp reset");
 }
 
@@ -323,7 +342,7 @@ static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp cwbfo ", .handler = cli_sp_cwbfo},
     {.prefix = "sp palette ", .handler = cli_sp_palette},
     {.prefix = "sp speed ", .handler = cli_sp_speed},
-    {.prefix = "sp peak ", .handler = cli_sp_peak},
+    {.prefix = "sp mode", .handler = cli_sp_mode},
     {.prefix = "sp ffttest", .handler = cli_sp_fft_test},
     {.prefix = "sp fft ", .handler = cli_sp_fft},
     {.prefix = "sp iqdump", .handler = cli_sp_iqdump},

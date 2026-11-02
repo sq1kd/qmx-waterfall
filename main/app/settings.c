@@ -13,7 +13,7 @@
  * The display is driven by level, span, floor/ceil, palette, speed and peak. */
 #define SETTINGS_SCHEMA_VER 2U
 #define SPECTRUM_SPEED_MIN 1.0f
-#define SPECTRUM_SPEED_MAX 25.0f
+#define SPECTRUM_SPEED_MAX 50.0f
 #define SETTINGS_SAVE_DEBOUNCE_US (1500ULL * 1000ULL)
 
 static const char *TAG = "settings";
@@ -44,7 +44,7 @@ void app_settings_defaults(app_settings_t *cfg)
     cfg->cw_pitch_hz = 700;
     cfg->wf_palette = 4;
     cfg->speed_lps = 25.0f;
-    cfg->peak = true;
+    cfg->spec_mode = 1; /* trace + peak */
 }
 
 static bool app_settings_validate_and_repair(app_settings_t *cfg)
@@ -87,6 +87,11 @@ static bool app_settings_validate_and_repair(app_settings_t *cfg)
         cfg->speed_lps > SPECTRUM_SPEED_MAX)
     {
         cfg->speed_lps = def.speed_lps;
+        repaired = true;
+    }
+    if (cfg->spec_mode > 3)
+    {
+        cfg->spec_mode = def.spec_mode;
         repaired = true;
     }
 
@@ -148,8 +153,8 @@ static esp_err_t app_settings_load(void)
         s_cfg.wf_palette = u8;
     if (nvs_get_u32(h, "sp_speed_x100", &u32) == ESP_OK)
         s_cfg.speed_lps = (float)u32 / 100.0f;
-    if (nvs_get_u8(h, "sp_peak", &u8) == ESP_OK)
-        s_cfg.peak = (u8 != 0);
+    if (nvs_get_u8(h, "sp_mode", &u8) == ESP_OK)
+        s_cfg.spec_mode = u8;
 
     nvs_close(h);
 
@@ -193,7 +198,7 @@ static esp_err_t app_settings_save_locked(void)
     if (err == ESP_OK)
         err = nvs_set_u32(h, "sp_speed_x100", sp_speed_x100);
     if (err == ESP_OK)
-        err = nvs_set_u8(h, "sp_peak", s_cfg.peak ? 1 : 0);
+        err = nvs_set_u8(h, "sp_mode", s_cfg.spec_mode);
     if (err == ESP_OK)
         err = nvs_commit(h);
 
@@ -202,6 +207,7 @@ static esp_err_t app_settings_save_locked(void)
     {
         static const char *const legacy_keys[] = {
             "sp_gamma_x100", "sp_alpha_x1000", "sp_cond_x100", "sp_beta_x1000", "sp_bilin",
+            "sp_peak",
         };
         for (size_t i = 0; i < sizeof(legacy_keys) / sizeof(legacy_keys[0]); i++)
         {
@@ -296,8 +302,15 @@ void app_settings_apply_to_runtime(void)
     spectrum_set_wf_range(s_cfg.wf_floor_db, s_cfg.wf_ceil_db);
     spectrum_set_cw_pitch_hz(s_cfg.cw_pitch_hz);
     spectrum_set_wf_palette(s_cfg.wf_palette);
-    spectrum_set_speed(s_cfg.speed_lps);
-    spectrum_set_peak(s_cfg.peak);
+    /* Lines average a whole number of FFTs, so the effective rate is snapped;
+     * keep the stored value honest so the UI/CLI show what is running. */
+    float effective = spectrum_set_speed(s_cfg.speed_lps);
+    if (fabsf(effective - s_cfg.speed_lps) > 0.01f)
+    {
+        s_cfg.speed_lps = effective;
+        app_settings_mark_dirty();
+    }
+    spectrum_set_spec_mode(s_cfg.spec_mode);
 }
 
 static esp_err_t app_settings_set_all(const app_settings_t *next)
@@ -352,14 +365,14 @@ esp_err_t app_settings_set_cw_pitch_hz(uint16_t hz)
 esp_err_t app_settings_set_speed(float lines_per_sec)
 {
     app_settings_t next = s_cfg;
-    next.speed_lps = lines_per_sec;
+    next.speed_lps = spectrum_snap_speed(lines_per_sec);
     return app_settings_set_all(&next);
 }
 
-esp_err_t app_settings_set_peak(bool enabled)
+esp_err_t app_settings_set_spec_mode(uint8_t mode)
 {
     app_settings_t next = s_cfg;
-    next.peak = enabled;
+    next.spec_mode = mode;
     return app_settings_set_all(&next);
 }
 

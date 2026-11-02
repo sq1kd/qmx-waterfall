@@ -23,6 +23,21 @@ static const char *TAG = "spectrum";
 #define SPEC_AXIS_LABEL spectrum_rgb565(0xD0, 0xD0, 0xD0)
 #define SPEC_MARKER spectrum_rgb565(0xFF, 0x00, 0x00)
 
+static inline bool mode_has_trace(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_TRACE || mode == SPECTRUM_MODE_TRACE_PEAK;
+}
+
+static inline bool mode_has_peak(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_TRACE_PEAK || mode == SPECTRUM_MODE_PEAK;
+}
+
+static inline int mode_spec_h(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_OFF ? SPEC_H_MIN : SPEC_H;
+}
+
 /* Waterfall rows are stored without the level offset; it is folded into the
  * palette floor/ceiling at draw time so the whole history follows the knob. */
 static void reset_history(void)
@@ -36,13 +51,14 @@ static void reset_history(void)
     s.wf_write_idx = 0;
     s.accum_idx = 0;
     s.line_acc_n = 0;
+    s.line_fft_count = 0;
     for (int i = 0; i < DISP_W; i++)
     {
         s.line_acc[i] = 0.0f;
         s.line_db[i] = s.wf_db_floor;
+        s.trace_db[i] = s.wf_db_floor;
         s.peak_db[i] = s.wf_db_floor;
     }
-    s.line_acc_us = 0;
     s.iq_capture_state = 0;
 }
 
@@ -60,7 +76,10 @@ static inline float bin_interp(const float *mag, int bins, int px)
 }
 
 /* Emit exactly one waterfall line from the power accumulated since the last
- * one. Both the trace and the waterfall row come from this same average. */
+ * one. Both the trace and the waterfall row come from this same average.
+ * Lines always average the same number of FFTs: a varying count changed the
+ * rendered noise variance (and so the mean palette colour) line by line,
+ * which showed up as 4-row bright/dark bands. */
 static void emit_line(void)
 {
     if (s.line_acc_n == 0)
@@ -72,7 +91,8 @@ static void emit_line(void)
         float db = 10.0f * log10f(s.line_acc[px] * inv + 1e-12f);
         s.line_acc[px] = 0.0f;
         s.line_db[px] = db;
-        if (s.peak_enabled)
+        s.trace_db[px] += s.trace_alpha * (db - s.trace_db[px]);
+        if (mode_has_peak(s.spec_mode))
         {
             float decayed = s.peak_db[px] - s.peak_decay_db;
             s.peak_db[px] = (db > decayed) ? db : decayed;
@@ -81,15 +101,6 @@ static void emit_line(void)
     s.line_acc_n = 0;
     spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_STORE_H, DISP_W, s.line_db);
     s.st_lines++;
-}
-
-static bool line_due(void)
-{
-    if (s.line_acc_n == 0 || s.line_acc_us < s.line_period_us)
-        return false;
-
-    s.line_acc_us -= s.line_period_us;
-    return true;
 }
 
 static void push_frame(void)
@@ -108,30 +119,32 @@ static void push_frame(void)
 
     int64_t t0 = esp_timer_get_time();
 
+    const int spec_h = mode_spec_h(s.spec_mode);
+    const int wf_h = DISP_H - spec_h;
     const float dfloor = s.wf_db_floor - s.level_offset_db;
     const float dceil = s.wf_db_ceil - s.level_offset_db;
 
-    spectrum_draw_spectrum_strip_db(s.canvas_buf, DISP_W, SPEC_H,
-                                    s.line_db,
-                                    s.peak_enabled ? s.peak_db : NULL,
+    spectrum_draw_spectrum_strip_db(s.canvas_buf, DISP_W, spec_h,
+                                    mode_has_trace(s.spec_mode) ? s.trace_db : NULL,
+                                    mode_has_peak(s.spec_mode) ? s.peak_db : NULL,
                                     dfloor, dceil,
                                     SPEC_BG, SPEC_FG, SPEC_PEAK);
 
-    spectrum_draw_waterfall(s.canvas_buf, DISP_W, WF_DISP_H, WF_Y0,
+    spectrum_draw_waterfall(s.canvas_buf, DISP_W, wf_h, spec_h,
                             s.wf_db, s.wf_write_idx, WF_STORE_H,
                             dfloor, dceil, s.wf_palette);
 
-    spectrum_draw_filter_overlay(s.canvas_buf, DISP_W, SPEC_H,
+    spectrum_draw_filter_overlay(s.canvas_buf, DISP_W, spec_h,
                                  s.view_mode, s.cfg.fft_size,
                                  s.sample_freq, s.filter_hz,
                                  s.mode_code, s.marker_px,
                                  SPEC_FILTER_FILL, SPEC_FILTER_EDGE);
 
     if (s.marker_px >= 0)
-        for (int y = 0; y < SPEC_H; y++)
+        for (int y = 0; y < spec_h; y++)
             s.canvas_buf[y * DISP_W + s.marker_px] = SPEC_MARKER;
 
-    spectrum_draw_axis_overlay(s.canvas_buf, DISP_W, SPEC_H,
+    spectrum_draw_axis_overlay(s.canvas_buf, DISP_W, spec_h,
                                s.view_mode, s.cfg.fft_size,
                                s.sample_freq,
                                true,
@@ -148,22 +161,20 @@ static void push_frame(void)
 
     lvgl_port_unlock();
 
-    if (!s.progress_finished)
-    {
-        s.progress_finished = true;
-        display_progress_finish();
-    }
+    /* Retry until it succeeds: the startup checklist must not stay up
+     * because one lock attempt timed out (or was shown after streaming
+     * started). */
+    if (display_progress_active())
+        (void)display_progress_finish();
 }
 
 void spectrum_pipeline_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "spectrum task started (fft=%u, %.1f lines/s, view=%u)",
-             s.cfg.fft_size, s.speed_lps, s.view_mode);
+    ESP_LOGI(TAG, "spectrum task started (fft=%u, %.1f lines/s x %lu fft, view=%u)",
+             s.cfg.fft_size, s.speed_lps, (unsigned long)s.line_group, s.view_mode);
 
     const uint32_t fft_size = s.cfg.fft_size;
-    const uint64_t fft_period_us =
-        ((uint64_t)fft_size * 1000000ULL + s.sample_freq / 2) / s.sample_freq;
 
     while (s.running)
     {
@@ -268,10 +279,11 @@ void spectrum_pipeline_task(void *arg)
                     for (int px = 0; px < DISP_W; px++)
                         s.line_acc[px] += bin_interp(render_mag, render_bins, px);
                     s.line_acc_n++;
-                    s.line_acc_us += fft_period_us;
 
-                    if (line_due())
+                    s.line_fft_count++;
+                    if (s.line_fft_count >= s.line_group)
                     {
+                        s.line_fft_count = 0;
                         emit_line();
                         line_pending = true;
                     }
