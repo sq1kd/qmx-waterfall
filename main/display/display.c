@@ -294,14 +294,22 @@ void display_init(void)
 
     /* Physical portrait dimensions — rotation is applied by lvgl_port on every
      * flush via lv_display_set_rotation so the hardware is always consistent. */
-    const lvgl_port_display_cfg_t disp_cfg = {
+    /* A whole-frame draw buffer in PSRAM flushes the canvas as one SPI burst
+     * instead of two 40-row chunks (at most one panel seam per frame). PSRAM
+     * is DMA capable on the S3, but it is optional hardware: without it, fall
+     * back to the partial internal buffer so the display still comes up. */
+    const size_t frame_px = (size_t)DISP_H_RES * DISP_V_RES;
+    const size_t psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const bool use_psram = psram_total >= frame_px * sizeof(uint16_t) + (256 * 1024);
+    ESP_LOGI(TAG, "draw buffer: %s (%u px, psram %u KB)",
+             use_psram ? "whole frame in PSRAM" : "partial in internal RAM",
+             (unsigned)(use_psram ? frame_px : (size_t)DISP_V_RES * 40),
+             (unsigned)(psram_total / 1024));
+
+    lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io,
         .panel_handle = panel,
-        /* One whole frame per draw buffer, in PSRAM (S3 PSRAM is DMA
-         * capable): the canvas is flushed in a single SPI burst instead of
-         * two 40-row chunks, so the panel shows at most one seam per frame
-         * instead of two with a render gap in between. */
-        .buffer_size = DISP_H_RES * DISP_V_RES,
+        .buffer_size = use_psram ? frame_px : (size_t)DISP_V_RES * 40,
         .double_buffer = false,
         .hres = DISP_H_RES, /* 76  — physical portrait width  */
         .vres = DISP_V_RES, /* 284 — physical portrait height */
@@ -315,8 +323,8 @@ void display_init(void)
         .flags = {
             .swap_bytes = true,
             .buff_dma = true,
-            .buff_spiram = true,
-            .full_refresh = true,
+            .buff_spiram = use_psram,
+            .full_refresh = use_psram,
         },
     };
     s_disp = lvgl_port_add_disp(&disp_cfg);
