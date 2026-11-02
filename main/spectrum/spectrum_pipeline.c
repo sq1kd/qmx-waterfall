@@ -137,6 +137,15 @@ void spectrum_pipeline_task(void *arg)
                     TickType_t elapsed_ms = (now - last_push) * portTICK_PERIOD_MS;
                     if (last_push == 0 || elapsed_ms >= ms_per_line)
                     {
+                        /* The canvas buffer is shared with LVGL: the render task
+                         * copies it to the panel. Draw the whole frame under the
+                         * port lock so a flush can never capture a half-drawn
+                         * canvas (missing filter overlay/marker/axis). */
+                        if (!lvgl_port_lock(pdMS_TO_TICKS(50)))
+                        {
+                            continue;
+                        }
+
                         last_push = now;
 
                         spectrum_draw_spectrum_strip_db(s.canvas_buf, DISP_W, SPEC_H,
@@ -169,11 +178,8 @@ void spectrum_pipeline_task(void *arg)
                                                    true,
                                                    SPEC_AXIS, SPEC_AXIS_LABEL);
 
-                        if (lvgl_port_lock(0))
-                        {
-                            lv_obj_invalidate(s.canvas);
-                            lvgl_port_unlock();
-                        }
+                        lv_obj_invalidate(s.canvas);
+                        lvgl_port_unlock();
 
                         if (!s.progress_finished)
                         {

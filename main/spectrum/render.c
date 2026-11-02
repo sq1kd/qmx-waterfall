@@ -325,11 +325,10 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
 
     int nbins = effective_bins(view_mode, fft_size);
     float center_bin = ((float)marker_px * (float)(nbins - 1)) / (float)(disp_w - 1);
-    float bw_bins = (float)filter_hz * (float)nbins / (float)sample_freq;
-    if (view_mode == 0)
-    {
-        bw_bins = (float)filter_hz * (float)fft_size / (float)sample_freq;
-    }
+    /* The zoomed view shows the upper half of the same bin grid, so the
+     * Hz-per-bin scale is sample_freq/fft_size in both views. Scaling the
+     * bandwidth by the half-grid drew every filter at half its real width. */
+    float bw_bins = (float)filter_hz * (float)fft_size / (float)sample_freq;
 
     float left_bin = center_bin - bw_bins * 0.5f;
     float right_bin = center_bin + bw_bins * 0.5f;
@@ -355,6 +354,43 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
         int t = left_px;
         left_px = right_px;
         right_px = t;
+    }
+
+    /* Narrow filters (hundreds of Hz on a 284 px wide 48 kHz span) round to a
+     * single pixel, which is invisible against the trace. Keep a readable
+     * minimum width anchored on the side the filter occupies. */
+    enum { FILTER_MIN_SPAN_PX = 2 };
+    if (right_px - left_px < FILTER_MIN_SPAN_PX)
+    {
+        if (mode_code == 1)
+        {
+            left_px = marker_px - FILTER_MIN_SPAN_PX;
+            right_px = marker_px;
+        }
+        else if (mode_code == 2)
+        {
+            left_px = marker_px;
+            right_px = marker_px + FILTER_MIN_SPAN_PX;
+        }
+        else
+        {
+            left_px = marker_px - FILTER_MIN_SPAN_PX / 2;
+            right_px = left_px + FILTER_MIN_SPAN_PX;
+        }
+        if (left_px < 0)
+        {
+            right_px -= left_px;
+            left_px = 0;
+        }
+        if (right_px >= disp_w)
+        {
+            left_px -= right_px - (disp_w - 1);
+            right_px = disp_w - 1;
+        }
+        if (left_px < 0)
+        {
+            left_px = 0;
+        }
     }
 
     for (int y = 0; y < spec_h; y++)
