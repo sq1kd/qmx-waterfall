@@ -1,0 +1,109 @@
+diff --git a/host/usb/src/enum.c b/host/usb/src/enum.c
+index b384aec..3134e68 100644
+--- a/host/usb/src/enum.c
++++ b/host/usb/src/enum.c
+@@ -27,6 +27,12 @@
+ #define ENUM_LANGID                                 0x409   // Current enumeration only supports English (United States) string descriptors
+ #define ENUM_MAX_ADDRESS                            (127)   // Maximal device address value
+ #define ENUM_PENDING_QUEUE_LEN                      (5)
++// Devices that are still bringing up their USB stack return a zero-length or truncated
++// data stage for the first GET_DESCRIPTOR instead of NAKing. Re-issue the short device
++// descriptor request before giving up. 25 x 100 ms covers roughly the 2.5 s some devices
++// (e.g. QRP Labs QMX) need after VBUS is applied.
++#define ENUM_SHORT_DESC_RETRY_DELAY_MS              100
++#define ENUM_SHORT_DESC_RETRY_MAX                   25
+ 
+ /**
+  * @brief Stages of device enumeration listed in their order of execution
+@@ -140,6 +146,8 @@ typedef struct {
+         enum_cancel_reason_t cancel_reason;         /**< Reason for the current cancellation */
+         enum_device_params_t dev_params;            /**< Parameters of device under enumeration */
+         int expect_num_bytes;                       /**< Expected number of bytes for IN transfers stages. Set to 0 for OUT transfer */
++        uint8_t short_desc_retries;                 /**< Number of short dev desc re-requests issued for the device under enumeration */
++        bool short_desc_retry;                      /**< The last short dev desc response was truncated, retry instead of cancelling */
+         uint8_t next_dev_addr;                      /**< Device address for device under enumeration */
+         // Pending enumeration queue
+         unsigned int pending_uids[ENUM_PENDING_QUEUE_LEN];
+@@ -368,6 +376,17 @@ static void control_request_general(enum_stage_t stage)
+ 
+     switch (stage) {
+     case ENUM_STAGE_GET_SHORT_DEV_DESC: {
++        if (p_enum_driver->single_thread.short_desc_retries > 0) {
++            // Give the device time to finish bringing up its USB stack. This blocks the
++            // host processing task, but no device of this host is streaming yet: the
++            // device under enumeration has not been configured and other devices were
++            // disconnected or are idle while a new device is enumerated.
++            vTaskDelay(pdMS_TO_TICKS(ENUM_SHORT_DESC_RETRY_DELAY_MS));
++            ESP_LOGD(ENUM_TAG, "Retry short dev desc (%u/%u)",
++                     p_enum_driver->single_thread.short_desc_retries,
++                     ENUM_SHORT_DESC_RETRY_MAX);
++        }
++        p_enum_driver->single_thread.short_desc_retry = false;
+         // Initialize a short device descriptor request
+         USB_SETUP_PACKET_INIT_GET_DEVICE_DESC((usb_setup_packet_t *)transfer->data_buffer);
+         ((usb_setup_packet_t *)transfer->data_buffer)->wLength = ENUM_SHORT_DESC_REQ_LEN;
+@@ -813,17 +832,28 @@ static esp_err_t control_response_handling(enum_stage_t stage)
+ 
+     // Check Control IN transfer returned the expected correct number of bytes
+     if (expected_num_bytes != 0 && expected_num_bytes != ctrl_xfer->actual_num_bytes) {
+-        ESP_LOGW(ENUM_TAG, "Unexpected (%d) device response length (expected %d)",
+-                 ctrl_xfer->actual_num_bytes,
+-                 expected_num_bytes);
++        const bool short_dev_desc = (stage == ENUM_STAGE_CHECK_SHORT_DEV_DESC);
+         if (ctrl_xfer->actual_num_bytes < expected_num_bytes) {
+-            // The device returned less bytes than requested. We cannot continue.
+-            ESP_LOGE(ENUM_TAG, "Device returned less bytes than requested");
++            if (short_dev_desc) {
++                // Device is likely still bringing up its USB stack and answered with a
++                // zero-length or truncated data stage. The enumerator re-issues this
++                // request a few times before cancelling, so keep this out of the log.
++                ESP_LOGD(ENUM_TAG, "Short dev desc not ready (%d of %d bytes)",
++                         ctrl_xfer->actual_num_bytes, expected_num_bytes);
++                p_enum_driver->single_thread.short_desc_retry = true;
++            } else {
++                // The device returned less bytes than requested. We cannot continue.
++                ESP_LOGW(ENUM_TAG, "Unexpected (%d) device response length (expected %d)",
++                         ctrl_xfer->actual_num_bytes, expected_num_bytes);
++                ESP_LOGE(ENUM_TAG, "Device returned less bytes than requested");
++            }
+             ret = ESP_ERR_INVALID_SIZE;
+             goto exit;
+         }
+         // The device returned more bytes than requested.
+         // This violates the USB specs chapter 9.3.5, but we can continue
++        ESP_LOGW(ENUM_TAG, "Unexpected (%d) device response length (expected %d)",
++                 ctrl_xfer->actual_num_bytes, expected_num_bytes);
+     }
+ 
+     switch (stage) {
+@@ -1059,6 +1089,21 @@ static bool set_next_stage(bool last_stage_pass)
+                 // iProduct string failed. Get iSerialNumber string next
+                 next_stage = ENUM_STAGE_GET_SHORT_SER_STR_DESC;
+                 break;
++            case ENUM_STAGE_CHECK_SHORT_DEV_DESC:
++                if (p_enum_driver->single_thread.short_desc_retry &&
++                        p_enum_driver->single_thread.short_desc_retries < ENUM_SHORT_DESC_RETRY_MAX) {
++                    if (p_enum_driver->single_thread.short_desc_retries == 0) {
++                        ESP_LOGW(ENUM_TAG, "Device did not answer GET_DESCRIPTOR yet, retrying for up to %u ms",
++                                 (unsigned)(ENUM_SHORT_DESC_RETRY_MAX * ENUM_SHORT_DESC_RETRY_DELAY_MS));
++                    }
++                    p_enum_driver->single_thread.short_desc_retries++;
++                    next_stage = ENUM_STAGE_GET_SHORT_DEV_DESC;
++                } else {
++                    ESP_LOGE(ENUM_TAG, "%s FAILED", enum_stage_strings[last_stage]);
++                    p_enum_driver->single_thread.cancel_reason = ENUM_CANCEL_REASON_ERROR;
++                    next_stage = ENUM_STAGE_CANCEL;
++                }
++                break;
+             case ENUM_STAGE_COMPLETE:
+             case ENUM_STAGE_CANCEL:
+                 // These stages should never fail
+@@ -1235,6 +1280,8 @@ esp_err_t enum_start(unsigned int uid)
+ 
+     p_enum_driver->single_thread.stage = ENUM_STAGE_GET_SHORT_DEV_DESC;
+     p_enum_driver->single_thread.cancel_reason = ENUM_CANCEL_REASON_NONE;
++    p_enum_driver->single_thread.short_desc_retries = 0;
++    p_enum_driver->single_thread.short_desc_retry = false;
+     p_enum_driver->single_thread.node_uid = uid;
+     p_enum_driver->single_thread.dev_hdl = dev_hdl;
+     // Save device handle to the URB transfer context

@@ -43,6 +43,7 @@ uv pip install --python "$venv/bin/python" \
     -c "$constraints"
 
 "$root/tools/idf-env.sh" idf.py --version
+"$root/tools/vendor-patches.sh"
 "$root/tools/idf-env.sh" idf.py update-dependencies
 '''
 
@@ -52,7 +53,7 @@ run = "tools/idf-env.sh idf.py update-dependencies"
 
 [build]
 description = "Build firmware for {{vars.target}}"
-run = "tools/idf-env.sh idf.py build"
+run = "tools/vendor-patches.sh && tools/idf-env.sh idf.py build"
 
 [clean]
 description = "Remove build outputs"

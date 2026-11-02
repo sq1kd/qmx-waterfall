@@ -23,7 +23,8 @@ builds use the same tree. It then:
 2. creates the Python environment with `uv` at `.idf/venv` and installs IDF's
    `requirements.core.txt` against IDF's constraints file
    (`IDF_PYTHON_ENV_PATH`), instead of `idf_tools.py install-python-env`
-3. syncs the `vendor/esp-usb` submodule and resolves managed components
+3. syncs the `vendor/esp-usb` submodule, applies the local patches from
+   `patches/` and resolves managed components
 
 `python` and `uv` are pinned in `mise.toml`, so the venv is reproducible across
 machines. Re-running `mise bootstrap` is safe; `uv` and `idf_tools.py` keep

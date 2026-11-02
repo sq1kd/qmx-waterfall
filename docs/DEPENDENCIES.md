@@ -18,6 +18,23 @@ The project resolves these components from the submodule via `main/idf_component
 - `espressif/usb` -> `../vendor/esp-usb/host/usb`
 - `espressif/usb_host_uac` -> `../vendor/esp-usb/host/class/uac/usb_host_uac`
 
+## Local patches
+
+`vendor/esp-usb` stays pinned to an upstream commit so it can always be
+fetched. Fixes that must go on top are tracked in `patches/` and applied by
+`tools/vendor-patches.sh` (run by `mise bootstrap` and before every
+`mise run build`; re-running is a no-op).
+
+- `0001-usb-host-retry-short-dev-desc.patch`: the enumerator re-issues the
+  short `GET_DESCRIPTOR` after a zero-length or truncated response instead of
+  cancelling enumeration, for up to 2.5 s. The QRP Labs QMX answers the first
+  descriptor requests with 0 then 2 bytes after USB power/reset, so the stock
+  one-shot enumerator disabled the root port and no device connect event ever
+  reached the app.
+
+When updating the submodule, re-run `tools/vendor-patches.sh`; if the patch no
+longer applies, rebase it instead of dropping it.
+
 ## Update process
 
 1. Move the submodule to the new commit and stage it:
