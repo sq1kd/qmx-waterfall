@@ -21,6 +21,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
 #include "lvgl.h"
 
 #define DISP_SCL_GPIO 12
@@ -371,12 +372,41 @@ void display_set_status_lines(const char *title, const char *detail)
     }
 }
 
+static void display_canvas_destroy_locked(void)
+{
+    if (s_canvas)
+    {
+        lv_obj_del(s_canvas);
+        s_canvas = NULL;
+    }
+}
+
+bool display_spectrum_detach(void)
+{
+    if (!s_disp)
+        return true;
+
+    /* The pipeline is stopped by the caller, so the lock is normally free;
+     * the timeout only guards against a wedged LVGL task, where handing the
+     * caller a "still attached" answer beats deadlocking the teardown. */
+    if (!lvgl_port_lock(pdMS_TO_TICKS(100)))
+        return false;
+
+    display_canvas_destroy_locked();
+    lvgl_port_unlock();
+    return true;
+}
+
 lv_obj_t *display_show_spectrum(void)
 {
     lv_obj_t *canvas = NULL;
     if (lvgl_port_lock(0))
     {
         lv_obj_t *scr = lv_display_get_screen_active(s_disp);
+
+        /* A retried start must not stack canvases (the old one would keep a
+         * pointer to a freed buffer). */
+        display_canvas_destroy_locked();
 
         /* Hide the status label */
         if (s_title != NULL)
@@ -418,11 +448,7 @@ void display_show_status(const char *msg)
     {
         lv_obj_t *scr = lv_display_get_screen_active(s_disp);
 
-        if (s_canvas)
-        {
-            lv_obj_del(s_canvas);
-            s_canvas = NULL;
-        }
+        display_canvas_destroy_locked();
 
         if (s_progress != NULL)
         {

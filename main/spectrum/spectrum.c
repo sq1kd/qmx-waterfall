@@ -11,6 +11,7 @@
 #include "esp_lvgl_port.h"
 #include "freertos/semphr.h"
 
+#include "display/display.h"
 #include "spectrum/dsp.h"
 #include "spectrum/freq_map.h"
 #include "spectrum/spectrum_priv.h"
@@ -56,11 +57,27 @@ static void spectrum_cleanup_state(spectrum_state_t *st)
         st->dsp_initialized = false;
     }
 
+    /* LVGL renders the canvas through a pointer to canvas_buf: delete the
+     * widget first or it keeps reading freed memory until the next
+     * display_show_status() (garbage frames, or a hang in the render task). */
+    bool keep_canvas_buf = false;
+    if (st->canvas_buf != NULL && !display_spectrum_detach())
+    {
+        /* LVGL is wedged and still references the buffer. Leaking it beats
+         * rendering freed memory; the device is being torn down anyway. */
+        ESP_LOGW(TAG, "canvas still attached, leaking %u-byte canvas buffer",
+                 (unsigned)((size_t)DISP_W * DISP_H * sizeof(uint16_t)));
+        keep_canvas_buf = true;
+    }
+
     free(st->window);
     free(st->fft_buf);
     free(st->wf_db);
     free(st->spec_ema_db);
-    free(st->canvas_buf);
+    if (!keep_canvas_buf)
+    {
+        free(st->canvas_buf);
+    }
 
     memset(st, 0, sizeof(*st));
 }

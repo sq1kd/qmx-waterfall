@@ -78,5 +78,15 @@ void display_set_status_lines(const char *title, const char *detail);
  */
 lv_obj_t *display_show_spectrum(void);
 
+/*
+ * Delete the spectrum canvas widget. Must be called before the canvas
+ * backing buffer is freed: LVGL keeps a pointer to it and would otherwise
+ * render freed memory after a teardown. Idempotent; waits up to 100 ms for
+ * the LVGL port lock (call with the spectrum pipeline already stopped).
+ * Returns false when the port lock could not be taken and the widget is
+ * still attached, in which case the buffer must not be freed.
+ */
+bool display_spectrum_detach(void);
+
 /* Switch back to centered status mode and hide spectrum canvas. */
 void display_show_status(const char *msg);
