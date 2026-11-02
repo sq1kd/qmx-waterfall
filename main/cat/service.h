@@ -25,6 +25,8 @@ typedef struct
     cat_state_t state;
     bool iq_enabled;
     bool iq_known;
+    bool iq_recovering;
+    char fw_version[16];
     char mode[16];
     uint8_t mode_code;
     char filter[24];
@@ -36,6 +38,8 @@ typedef struct
     uint32_t parse_errors;
     uint32_t timeouts;
     uint32_t retries;
+    uint32_t iq_drops;
+    uint32_t iq_reenables;
 } cat_status_t;
 
 typedef void (*cat_status_cb_t)(const cat_status_t *status, void *user_ctx);
@@ -43,7 +47,8 @@ typedef void (*cat_status_cb_t)(const cat_status_t *status, void *user_ctx);
 typedef struct
 {
     bool auto_enable_iq;
-    uint32_t poll_period_ms; /* mode/filter polling; default 1000 */
+    uint32_t poll_period_ms;    /* mode/filter polling; default 1000 */
+    uint32_t iq_poll_period_ms; /* Q9 health polling while IQ active; default 2000 */
     cat_status_cb_t status_cb;
     void *status_cb_ctx;
 } cat_service_config_t;

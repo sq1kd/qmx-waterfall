@@ -24,6 +24,14 @@
 #define CAT_CONNECT_WARMUP_MS 700
 #define CAT_MIN_TX_SPACING_MS 150
 
+/* IQ mode is session-only on the radio and is cleared when the operator
+ * leaves the configuration menu, so it has to be watched and restored. */
+#define CAT_IQ_POLL_PERIOD_MS 2000
+#define CAT_IQ_POLL_MIN_MS 500
+#define CAT_IQ_RETRY_FAST_MS 1000
+#define CAT_IQ_RETRY_MAX_FAST 3
+#define CAT_IQ_RETRY_CAP_MS 10000
+
 typedef struct
 {
     size_t len;
@@ -37,7 +45,15 @@ typedef enum
     CAT_CMD_SET_IQ_ON,
     CAT_CMD_GET_IF,
     CAT_CMD_GET_FILTER,
+    CAT_CMD_GET_VERSION,
+    CAT_CMD_IQ_HEALTH,
 } cat_cmd_id_t;
+
+typedef enum
+{
+    CAT_PROBE_VERSION = 0,
+    CAT_PROBE_FILTER,
+} cat_probe_step_t;
 
 typedef struct
 {
@@ -72,6 +88,12 @@ static struct
     cat_pending_t pending;
     TickType_t backoff_until;
     uint8_t recovery_attempts;
+    cat_probe_step_t probe_step;
+    uint32_t iq_poll_period_ms;
+    TickType_t iq_next_poll;
+    TickType_t iq_retry_at;
+    uint8_t iq_attempts;
+    bool iq_recovering;
     TickType_t last_poll;
     bool poll_filter_due;
     TickType_t poll_filter_due_at;
@@ -221,6 +243,69 @@ static void set_iq_status(bool enabled)
     notify_status();
 }
 
+static uint32_t iq_retry_delay_ms(uint8_t attempts)
+{
+    if (attempts <= CAT_IQ_RETRY_MAX_FAST)
+    {
+        return CAT_IQ_RETRY_FAST_MS;
+    }
+    uint32_t delay = (uint32_t)CAT_IQ_RETRY_FAST_MS << (attempts - CAT_IQ_RETRY_MAX_FAST);
+    return (delay > CAT_IQ_RETRY_CAP_MS) ? CAT_IQ_RETRY_CAP_MS : delay;
+}
+
+static void iq_recovery_begin(void)
+{
+    xSemaphoreTake(s.lock, portMAX_DELAY);
+    s.status.iq_drops++;
+    s.status.iq_recovering = true;
+    xSemaphoreGive(s.lock);
+
+    s.iq_recovering = true;
+    s.iq_attempts = 0;
+    s.iq_retry_at = xTaskGetTickCount();
+    ESP_LOGW(TAG, "IQ mode dropped by radio, re-enabling");
+    set_state(CAT_ST_IQ_ENABLING);
+}
+
+static void iq_attempt_failed(void)
+{
+    s.iq_attempts++;
+    uint32_t delay = iq_retry_delay_ms(s.iq_attempts);
+    s.iq_retry_at = xTaskGetTickCount() + pdMS_TO_TICKS(delay);
+    ESP_LOGW(TAG, "IQ enable not confirmed, retry %u in %lums",
+             (unsigned)s.iq_attempts, (unsigned long)delay);
+    set_state(CAT_ST_IQ_ENABLING);
+}
+
+static void iq_recovery_succeeded(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    bool was_recovering = s.iq_recovering;
+
+    s.iq_recovering = false;
+    s.iq_attempts = 0;
+    s.recovery_attempts = 0;
+    s.iq_next_poll = now + pdMS_TO_TICKS(s.iq_poll_period_ms);
+
+    if (was_recovering)
+    {
+        xSemaphoreTake(s.lock, portMAX_DELAY);
+        s.status.iq_recovering = false;
+        s.status.iq_reenables++;
+        uint32_t drops = s.status.iq_drops;
+        uint32_t reenables = s.status.iq_reenables;
+        xSemaphoreGive(s.lock);
+
+        /* The operator may have changed mode/filter in the menu that
+         * dropped IQ mode; refresh them right after recovery. */
+        s.poll_filter_due = true;
+        s.poll_filter_due_at = now + pdMS_TO_TICKS(CAT_POLL_GAP_MS);
+        ESP_LOGI(TAG, "IQ mode restored (drops=%lu reenables=%lu)",
+                 (unsigned long)drops, (unsigned long)reenables);
+    }
+    set_state(CAT_ST_IQ_ACTIVE);
+}
+
 static void apply_frame_fields(const char *frame)
 {
     bool changed = false;
@@ -316,6 +401,10 @@ static bool frame_matches_pending(const char *frame)
         return strncmp(frame, "IF", 2) == 0;
     case CAT_CMD_GET_FILTER:
         return (strncmp(frame, "FW", 2) == 0) || (strncmp(frame, "BW", 2) == 0);
+    case CAT_CMD_GET_VERSION:
+        return strncmp(frame, "VN", 2) == 0;
+    case CAT_CMD_IQ_HEALTH:
+        return strncmp(frame, "Q9", 2) == 0;
     default:
         return false;
     }
@@ -323,7 +412,10 @@ static bool frame_matches_pending(const char *frame)
 
 static bool is_optional_cmd(cat_cmd_id_t id)
 {
-    return false;
+    /* Optional commands never escalate the link to DEGRADED: a missing
+     * reply just means "not available right now" (radio busy in its menu)
+     * or "not supported" (version probe). */
+    return (id == CAT_CMD_GET_VERSION) || (id == CAT_CMD_IQ_HEALTH);
 }
 
 static void handle_frame(const char *frame)
@@ -352,20 +444,44 @@ static void handle_frame(const char *frame)
                 set_iq_status(iq_on);
                 if (s.status.state == CAT_ST_SYNC)
                 {
+                    s.probe_step = CAT_PROBE_VERSION;
                     set_state(CAT_ST_PROBE);
                 }
                 else if (s.status.state == CAT_ST_IQ_VERIFY)
                 {
                     if (iq_on)
                     {
-                        set_state(CAT_ST_IQ_ACTIVE);
-                        s.recovery_attempts = 0;
+                        iq_recovery_succeeded();
                     }
                     else
                     {
-                        set_state(CAT_ST_READY);
+                        iq_attempt_failed();
                     }
                 }
+            }
+            break;
+        }
+        case CAT_CMD_GET_VERSION:
+        {
+            char ver[16];
+            if (cat_proto_parse_version(frame, ver, sizeof(ver)))
+            {
+                xSemaphoreTake(s.lock, portMAX_DELAY);
+                strlcpy(s.status.fw_version, ver, sizeof(s.status.fw_version));
+                xSemaphoreGive(s.lock);
+                notify_status();
+                ESP_LOGI(TAG, "radio firmware %s", ver);
+            }
+            s.probe_step = CAT_PROBE_FILTER;
+            break;
+        }
+        case CAT_CMD_IQ_HEALTH:
+        {
+            bool iq_on = false;
+            if (cat_proto_parse_iq_value(frame, &iq_on) && !iq_on &&
+                s.status.state == CAT_ST_IQ_ACTIVE)
+            {
+                iq_recovery_begin();
             }
             break;
         }
@@ -443,7 +559,12 @@ static void check_timeout(void)
     bump_timeout();
     if (is_optional_cmd(s.pending.id))
     {
+        cat_cmd_id_t id = s.pending.id;
         clear_pending();
+        if (id == CAT_CMD_GET_VERSION)
+        {
+            s.probe_step = CAT_PROBE_FILTER;
+        }
         return;
     }
 
@@ -496,19 +617,35 @@ static void try_state_progress(void)
         break;
 
     case CAT_ST_PROBE:
+        if (s.probe_step == CAT_PROBE_VERSION)
+        {
+            /* Informational only; a silent or unsupported radio must not
+             * affect the link state. */
+            send_cmd(CAT_CMD_GET_VERSION, "VN;", CAT_CMD_TIMEOUT_MS);
+            break;
+        }
         s.poll_filter_due = true;
-        s.poll_filter_due_at = xTaskGetTickCount();
+        s.poll_filter_due_at = now + pdMS_TO_TICKS(CAT_POLL_GAP_MS);
         set_state(CAT_ST_READY);
         break;
 
     case CAT_ST_READY:
         if (s.status.iq_known && s.status.iq_enabled)
         {
+            s.iq_recovering = false;
+            xSemaphoreTake(s.lock, portMAX_DELAY);
+            s.status.iq_recovering = false;
+            xSemaphoreGive(s.lock);
+            s.iq_next_poll = now + pdMS_TO_TICKS(s.iq_poll_period_ms);
             set_state(CAT_ST_IQ_ACTIVE);
             break;
         }
         if (s.auto_enable_iq && (!s.status.iq_known || !s.status.iq_enabled))
         {
+            /* Keep iq_recovering across a link fault so a recovery that
+             * spans a re-sync still counts as one. */
+            s.iq_attempts = 0;
+            s.iq_retry_at = now;
             set_state(CAT_ST_IQ_ENABLING);
             break;
         }
@@ -529,6 +666,10 @@ static void try_state_progress(void)
         break;
 
     case CAT_ST_IQ_ENABLING:
+        if (now < s.iq_retry_at)
+        {
+            break;
+        }
         if (send_cmd_no_wait(CAT_CMD_SET_IQ_ON, "Q91;"))
         {
             set_state(CAT_ST_IQ_VERIFY);
@@ -547,6 +688,12 @@ static void try_state_progress(void)
                 send_cmd(CAT_CMD_GET_FILTER, "FW;", CAT_CMD_TIMEOUT_MS);
                 s.poll_filter_due = false;
             }
+            break;
+        }
+        if (s.auto_enable_iq && now >= s.iq_next_poll)
+        {
+            s.iq_next_poll = now + pdMS_TO_TICKS(s.iq_poll_period_ms);
+            send_cmd(CAT_CMD_IQ_HEALTH, "Q9;", CAT_CMD_TIMEOUT_MS);
             break;
         }
         if ((uint32_t)((now - s.last_poll) * portTICK_PERIOD_MS) >= s.poll_period_ms)
@@ -592,9 +739,12 @@ static void cat_task(void *arg)
             xSemaphoreTake(s.lock, portMAX_DELAY);
             st = s.status;
             xSemaphoreGive(s.lock);
-            ESP_LOGD(TAG, "status state=%s iq=%d mode=%s filter=%s rit=%ld(%d) to=%lu rt=%lu",
+            ESP_LOGD(TAG, "status state=%s fw=%s iq=%d drops=%lu reen=%lu mode=%s filter=%s rit=%ld(%d) to=%lu rt=%lu",
                      cat_state_name(st.state),
+                     st.fw_version[0] ? st.fw_version : "?",
                      st.iq_enabled ? 1 : 0,
+                     (unsigned long)st.iq_drops,
+                     (unsigned long)st.iq_reenables,
                      st.mode[0] ? st.mode : "?",
                      st.filter[0] ? st.filter : "?",
                      (long)st.rit_hz,
@@ -615,6 +765,7 @@ void cat_service_default_config(cat_service_config_t *cfg)
     }
     cfg->auto_enable_iq = true;
     cfg->poll_period_ms = 1000;
+    cfg->iq_poll_period_ms = CAT_IQ_POLL_PERIOD_MS;
     cfg->status_cb = NULL;
     cfg->status_cb_ctx = NULL;
 }
@@ -652,6 +803,13 @@ esp_err_t cat_service_start(usbh_cdc_port_handle_t port, const cat_service_confi
 
     s.auto_enable_iq = local_cfg.auto_enable_iq;
     s.poll_period_ms = (local_cfg.poll_period_ms == 0) ? 1000 : local_cfg.poll_period_ms;
+    s.iq_poll_period_ms = (local_cfg.iq_poll_period_ms == 0)
+                              ? CAT_IQ_POLL_PERIOD_MS
+                              : local_cfg.iq_poll_period_ms;
+    if (s.iq_poll_period_ms < CAT_IQ_POLL_MIN_MS)
+    {
+        s.iq_poll_period_ms = CAT_IQ_POLL_MIN_MS;
+    }
     s.cb = local_cfg.status_cb;
     s.cb_ctx = local_cfg.status_cb_ctx;
     s.port = port;

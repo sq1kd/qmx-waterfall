@@ -141,6 +141,11 @@ void spectrum_set_cat_tuning(uint8_t mode_code, int32_t rit_hz, bool rit_on)
     spectrum_update_marker_px();
 }
 
+void spectrum_request_history_reset(void)
+{
+    s.history_reset_pending = true;
+}
+
 void spectrum_set_cw_pitch_hz(uint16_t hz)
 {
     if (hz < 400)

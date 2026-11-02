@@ -6,6 +6,7 @@
 #include "esp_lvgl_port.h"
 #include "esp_dsp.h"
 
+#include "display/display.h"
 #include "spectrum/render.h"
 #include "spectrum/axis.h"
 #include "spectrum/dsp.h"
@@ -34,6 +35,20 @@ void spectrum_pipeline_task(void *arg)
 
         if (!s.running)
             break;
+
+        if (s.history_reset_pending)
+        {
+            s.history_reset_pending = false;
+            if (s.wf_db != NULL && s.spec_ema_db != NULL)
+            {
+                for (int i = 0; i < WF_STORE_H * DISP_W; i++)
+                    s.wf_db[i] = s.wf_db_floor;
+                s.wf_write_idx = 0;
+                for (int i = 0; i < DISP_W; i++)
+                    s.spec_ema_db[i] = s.wf_db_floor;
+                s.accum_idx = 0;
+            }
+        }
 
         if (s.uac_handle == NULL)
             continue;
@@ -158,6 +173,12 @@ void spectrum_pipeline_task(void *arg)
                         {
                             lv_obj_invalidate(s.canvas);
                             lvgl_port_unlock();
+                        }
+
+                        if (!s.progress_finished)
+                        {
+                            s.progress_finished = true;
+                            display_progress_finish();
                         }
                     }
                 }

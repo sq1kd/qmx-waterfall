@@ -257,6 +257,7 @@ static void start_iq_stream_and_spectrum(void)
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
     s_iq_stream_started = true;
     xSemaphoreGive(s_dev_mutex);
+    display_stage(DISP_STAGE_SPECTRUM, DISP_STAGE_ACTIVE, "streaming");
 
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
     bool spectrum_started = s_spectrum_started;
@@ -369,7 +370,9 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
         return;
     }
 
-    display_set_status_lines(DISP_MSG_USB_FOUND, "Starting audio and control links");
+    display_show_progress();
+    display_stage(DISP_STAGE_USB, DISP_STAGE_DONE, "found");
+    display_stage(DISP_STAGE_AUDIO, DISP_STAGE_ACTIVE, "configuring");
 
     const uac_host_device_config_t dev_config = {
         .addr = addr,
@@ -438,6 +441,11 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
     }
 
     spectrum_set_stream_params(channels, bit_res, freq);
+
+    char audio_detail[24];
+    (void)snprintf(audio_detail, sizeof(audio_detail), "%luk %uch %ub",
+                   (unsigned long)(freq / 1000), (unsigned)channels, (unsigned)bit_res);
+    display_stage(DISP_STAGE_AUDIO, DISP_STAGE_DONE, audio_detail);
 
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
     s_iq_handle = handle;

@@ -69,6 +69,9 @@ typedef struct
     float wf_temporal_beta;
     bool wf_bilinear;
     uint8_t view_mode;
+
+    volatile bool history_reset_pending;
+    bool progress_finished;
 } spectrum_state_t;
 
 extern spectrum_state_t s;

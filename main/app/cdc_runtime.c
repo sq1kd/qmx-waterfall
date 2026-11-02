@@ -2,7 +2,6 @@
 #include "app/recovery.h"
 #include "app/timing_config.h"
 
-#include <stdio.h>
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -44,56 +43,69 @@ static bool queue_cdc_event(cdc_evt_id_t id, const usbh_cdc_device_event_data_t 
 
 static void cat_status_callback(const cat_status_t *st, void *user_ctx)
 {
+    static uint32_t s_last_reenables;
     (void)user_ctx;
     if (!st)
     {
         return;
     }
 
-    char detail[96];
     spectrum_set_filter_params(st->mode_code, st->filter_hz);
     spectrum_set_cat_tuning(st->mode_code, st->rit_hz, st->rit_on);
 
-    if (st->state == CAT_ST_IQ_ACTIVE)
+    /* Rows captured while the radio streamed audio instead of IQ are not
+     * spectrum data; drop them when IQ mode comes back. */
+    if (st->iq_reenables != s_last_reenables)
     {
-        snprintf(detail, sizeof(detail), "Mode %s | Filter %s",
-                 st->mode[0] ? st->mode : "?",
-                 st->filter[0] ? st->filter : "?");
-        display_set_status_lines("Radio linked", detail);
-        app_runtime_trigger_iq_start_async();
-        return;
-    }
-
-    if (st->state == CAT_ST_IQ_ENABLING || st->state == CAT_ST_IQ_VERIFY)
-    {
-        display_set_status_lines(DISP_MSG_ENABLING_IQ, "Enabling IQ stream");
-        return;
-    }
-
-    if (st->state == CAT_ST_DEGRADED || st->state == CAT_ST_FAULT)
-    {
-        snprintf(detail, sizeof(detail), "Timeouts %lu | Retries %lu",
-                 (unsigned long)st->timeouts,
-                 (unsigned long)st->retries);
-        display_set_status_lines("Link unstable", detail);
-        return;
+        if (st->iq_reenables > s_last_reenables)
+        {
+            spectrum_request_history_reset();
+        }
+        s_last_reenables = st->iq_reenables;
     }
 
     switch (st->state)
     {
+    case CAT_ST_IQ_ACTIVE:
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
+        if (st->fw_version[0])
+        {
+            display_stage(DISP_STAGE_RADIO, DISP_STAGE_DONE, st->fw_version);
+        }
+        display_stage(DISP_STAGE_IQ, DISP_STAGE_DONE, "on");
+        app_runtime_trigger_iq_start_async();
+        break;
+
+    case CAT_ST_IQ_ENABLING:
+    case CAT_ST_IQ_VERIFY:
+        display_stage(DISP_STAGE_IQ, DISP_STAGE_ACTIVE,
+                      st->iq_recovering ? "re-enabling" : "enabling");
+        break;
+
+    case CAT_ST_DEGRADED:
+    case CAT_ST_FAULT:
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_FAILED, "no replies");
+        break;
+
     case CAT_ST_DISCONNECTED:
-        display_set_status_lines("Waiting for device", "Plug in USB audio + CAT");
         break;
     case CAT_ST_PORT_OPEN:
-        display_set_status_lines("Control link ready", "Waiting for radio replies");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "opening");
         break;
     case CAT_ST_SYNC:
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "syncing");
+        break;
     case CAT_ST_PROBE:
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
+        display_stage(DISP_STAGE_RADIO, DISP_STAGE_ACTIVE, "reading");
+        break;
     case CAT_ST_READY:
-        display_set_status_lines("Talking to radio", "Reading mode and filter");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
+        display_stage(DISP_STAGE_RADIO, DISP_STAGE_DONE,
+                      st->fw_version[0] ? NULL : "?");
+        display_stage(DISP_STAGE_IQ, DISP_STAGE_ACTIVE, "enabling");
         break;
     default:
-        display_set_status_lines("Working", "Synchronizing radio state");
         break;
     }
 }
@@ -177,10 +189,14 @@ static void handle_cdc_connected(const usbh_cdc_device_event_data_t *event_data)
     xSemaphoreGive(s_dev_mutex);
     app_runtime_set_stream_state(false, false, false);
 
+    display_show_progress();
+    display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "opening");
+
     cat_service_config_t cat_cfg;
     cat_service_default_config(&cat_cfg);
     cat_cfg.auto_enable_iq = true;
     cat_cfg.poll_period_ms = 1000;
+    cat_cfg.iq_poll_period_ms = 2000;
     cat_cfg.status_cb = cat_status_callback;
     cat_cfg.status_cb_ctx = NULL;
     err = cat_service_start(port, &cat_cfg);

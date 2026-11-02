@@ -12,6 +12,8 @@
 
 #include "display/display.h"
 
+#include <stdio.h>
+#include <string.h>
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
@@ -49,10 +51,38 @@
 
 static const char *TAG = "display";
 
+#define DISP_STAGE_DETAIL_LEN 24
+/* 2 rows x 3 columns of badges: 3*92 + 2*2 gaps + 2*2 margins = 284. */
+#define DISP_STAGE_COLS 3
+#define DISP_STAGE_BOX_W 92
+#define DISP_STAGE_BOX_H 34
+#define DISP_STAGE_GAP 2
+#define DISP_STAGE_MARGIN 2
+
 static lv_display_t *s_disp = NULL;
 static lv_obj_t *s_title = NULL;
 static lv_obj_t *s_detail = NULL;
 static lv_obj_t *s_canvas = NULL;
+
+/* Startup checklist: fixed set of rows updated in place. */
+static lv_obj_t *s_progress = NULL;
+static lv_obj_t *s_stage_box[DISP_STAGE_COUNT];
+static lv_obj_t *s_stage_name[DISP_STAGE_COUNT];
+static lv_obj_t *s_stage_marker[DISP_STAGE_COUNT];
+static lv_obj_t *s_stage_detail[DISP_STAGE_COUNT];
+static char s_stage_detail_buf[DISP_STAGE_COUNT][DISP_STAGE_DETAIL_LEN];
+static disp_stage_state_t s_stage_state[DISP_STAGE_COUNT];
+static bool s_progress_visible = false;
+static bool s_progress_finished = false;
+
+static const char *const s_stage_label[DISP_STAGE_COUNT] = {
+    "USB device",
+    "Audio",
+    "Control link",
+    "Radio",
+    "IQ mode",
+    "Spectrum",
+};
 
 static void display_set_status_lines_locked(const char *title, const char *detail)
 {
@@ -63,7 +93,8 @@ static void display_set_status_lines_locked(const char *title, const char *detai
     if (detail && detail[0])
     {
         lv_label_set_text(s_detail, detail);
-        lv_obj_set_hidden(s_detail, false);
+        /* The checklist replaces the two-line view while it is up. */
+        lv_obj_set_hidden(s_detail, s_progress_visible);
         lv_obj_align(s_detail, LV_ALIGN_CENTER, 0, 10);
     }
     else
@@ -71,6 +102,116 @@ static void display_set_status_lines_locked(const char *title, const char *detai
         lv_label_set_text(s_detail, "");
         lv_obj_set_hidden(s_detail, true);
     }
+}
+
+static void display_stage_apply_locked(disp_stage_t stage)
+{
+    if ((int)stage < 0 || stage >= (int)DISP_STAGE_COUNT || s_stage_box[stage] == NULL)
+    {
+        return;
+    }
+
+    const char *marker = ".";
+    uint32_t border = 0x3A3F52; /* pending: dim */
+    uint32_t bg = 0x101218;
+    uint32_t fg = 0x6B7280;
+    switch (s_stage_state[stage])
+    {
+    case DISP_STAGE_ACTIVE:
+        marker = ">";
+        border = 0x7AA2F7;
+        bg = 0x1A2233;
+        fg = 0xD7DEEA;
+        break;
+    case DISP_STAGE_DONE:
+        marker = "+";
+        border = 0x4ADE80;
+        bg = 0x16261B;
+        fg = 0x4ADE80;
+        break;
+    case DISP_STAGE_FAILED:
+        marker = "!";
+        border = 0xF87171;
+        bg = 0x2A1717;
+        fg = 0xF87171;
+        break;
+    default:
+        break;
+    }
+
+    lv_obj_set_style_border_color(s_stage_box[stage], lv_color_hex(border), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_stage_box[stage], lv_color_hex(bg), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_stage_name[stage], lv_color_hex(fg), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_stage_marker[stage], lv_color_hex(fg), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_stage_detail[stage], lv_color_hex(0x95A3B7), LV_PART_MAIN);
+    lv_label_set_text(s_stage_marker[stage], marker);
+    lv_label_set_text(s_stage_name[stage], s_stage_label[stage]);
+    lv_label_set_text(s_stage_detail[stage], s_stage_detail_buf[stage]);
+}
+
+static void display_progress_create_locked(void)
+{
+    if (s_progress != NULL)
+    {
+        return;
+    }
+    lv_display_t *disp = lv_display_get_default();
+    if (disp == NULL)
+    {
+        return;
+    }
+    lv_obj_t *scr = lv_display_get_screen_active(disp);
+    if (scr == NULL)
+    {
+        return;
+    }
+
+    s_progress = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_progress);
+    lv_obj_set_size(s_progress, DISP_LOGICAL_W, DISP_LOGICAL_H);
+    lv_obj_set_pos(s_progress, 0, 0);
+    lv_obj_set_style_bg_opa(s_progress, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_progress, 0, LV_PART_MAIN);
+
+    for (int i = 0; i < (int)DISP_STAGE_COUNT; i++)
+    {
+        int col = i % DISP_STAGE_COLS;
+        int row = i / DISP_STAGE_COLS;
+        int x = DISP_STAGE_MARGIN + col * (DISP_STAGE_BOX_W + DISP_STAGE_GAP);
+        int y = DISP_STAGE_MARGIN + row * (DISP_STAGE_BOX_H + DISP_STAGE_GAP);
+
+        s_stage_detail_buf[i][0] = '\0';
+        s_stage_state[i] = DISP_STAGE_PENDING;
+
+        lv_obj_t *box = lv_obj_create(s_progress);
+        lv_obj_remove_style_all(box);
+        lv_obj_set_size(box, DISP_STAGE_BOX_W, DISP_STAGE_BOX_H);
+        lv_obj_set_pos(box, x, y);
+        lv_obj_set_style_radius(box, 3, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(box, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(box, 1, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
+        lv_obj_set_style_clip_corner(box, true, LV_PART_MAIN);
+        s_stage_box[i] = box;
+
+        s_stage_name[i] = lv_label_create(box);
+        lv_obj_set_pos(s_stage_name[i], 4, 1);
+
+        s_stage_marker[i] = lv_label_create(box);
+        lv_obj_align(s_stage_marker[i], LV_ALIGN_TOP_RIGHT, -4, 1);
+
+        s_stage_detail[i] = lv_label_create(box);
+        lv_obj_set_pos(s_stage_detail[i], 4, 17);
+        lv_obj_set_width(s_stage_detail[i], DISP_STAGE_BOX_W - 8);
+
+#if defined(CONFIG_LV_FONT_MONTSERRAT_10)
+        lv_obj_set_style_text_font(s_stage_name[i], &lv_font_montserrat_10, LV_PART_MAIN);
+        lv_obj_set_style_text_font(s_stage_marker[i], &lv_font_montserrat_10, LV_PART_MAIN);
+        lv_obj_set_style_text_font(s_stage_detail[i], &lv_font_montserrat_10, LV_PART_MAIN);
+#endif
+        display_stage_apply_locked((disp_stage_t)i);
+    }
+    lv_obj_set_hidden(s_progress, true);
 }
 
 void display_init(void)
@@ -256,6 +397,13 @@ lv_obj_t *display_show_spectrum(void)
         lv_obj_align(canvas, LV_ALIGN_TOP_LEFT, 0, 0);
         s_canvas = canvas;
 
+        /* Keep the startup checklist above the canvas until the first
+         * waterfall frame is on screen. */
+        if (s_progress != NULL && s_progress_visible)
+        {
+            lv_obj_move_foreground(s_progress);
+        }
+
         lvgl_port_unlock();
     }
     return canvas;
@@ -276,6 +424,13 @@ void display_show_status(const char *msg)
             s_canvas = NULL;
         }
 
+        if (s_progress != NULL)
+        {
+            lv_obj_set_hidden(s_progress, true);
+        }
+        s_progress_visible = false;
+        s_progress_finished = false;
+
         lv_obj_set_hidden(s_title, false);
         lv_obj_set_hidden(s_detail, false);
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
@@ -283,4 +438,83 @@ void display_show_status(const char *msg)
 
         lvgl_port_unlock();
     }
+}
+
+void display_show_progress(void)
+{
+    if (!lvgl_port_lock(100))
+    {
+        return;
+    }
+
+    display_progress_create_locked();
+    if (s_progress != NULL && !s_progress_visible && !s_progress_finished)
+    {
+        for (int i = 0; i < (int)DISP_STAGE_COUNT; i++)
+        {
+            s_stage_detail_buf[i][0] = '\0';
+            s_stage_state[i] = DISP_STAGE_PENDING;
+            display_stage_apply_locked((disp_stage_t)i);
+        }
+        if (s_title != NULL)
+        {
+            lv_obj_set_hidden(s_title, true);
+        }
+        if (s_detail != NULL)
+        {
+            lv_obj_set_hidden(s_detail, true);
+        }
+        lv_obj_set_hidden(s_progress, false);
+        lv_obj_move_foreground(s_progress);
+        s_progress_visible = true;
+    }
+
+    lvgl_port_unlock();
+}
+
+void display_stage(disp_stage_t stage, disp_stage_state_t state, const char *detail)
+{
+    if ((int)stage < 0 || stage >= (int)DISP_STAGE_COUNT)
+    {
+        return;
+    }
+    if (!lvgl_port_lock(100))
+    {
+        return;
+    }
+
+    if (s_progress != NULL && s_progress_visible)
+    {
+        s_stage_state[stage] = state;
+        if (detail != NULL)
+        {
+            strlcpy(s_stage_detail_buf[stage], detail, DISP_STAGE_DETAIL_LEN);
+        }
+        display_stage_apply_locked(stage);
+    }
+
+    lvgl_port_unlock();
+}
+
+void display_progress_finish(void)
+{
+    if (!lvgl_port_lock(100))
+    {
+        return;
+    }
+
+    if (s_progress != NULL)
+    {
+        if (s_stage_state[DISP_STAGE_SPECTRUM] != DISP_STAGE_FAILED)
+        {
+            s_stage_state[DISP_STAGE_SPECTRUM] = DISP_STAGE_DONE;
+            strlcpy(s_stage_detail_buf[DISP_STAGE_SPECTRUM], "running", DISP_STAGE_DETAIL_LEN);
+            display_stage_apply_locked(DISP_STAGE_SPECTRUM);
+        }
+        lv_obj_set_hidden(s_progress, true);
+    }
+    s_progress_visible = false;
+    s_progress_finished = true;
+
+    lvgl_port_unlock();
 }

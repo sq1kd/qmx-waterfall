@@ -123,6 +123,41 @@ bool cat_proto_parse_filter(const char *frame, char *out, size_t out_len, uint32
     return out[0] != '\0';
 }
 
+bool cat_proto_parse_version(const char *frame, char *out, size_t out_len)
+{
+    if (!frame || !out || out_len == 0 || strncmp(frame, "VN", 2) != 0)
+    {
+        return false;
+    }
+
+    const char *p = frame + 2;
+    size_t n = strlen(p);
+    while (n > 0 && p[n - 1] == ' ')
+    {
+        n--;
+    }
+    /* QMX appends its model id: "1_04_010QMX". */
+    if (n > 3 && strncmp(p + n - 3, "QMX", 3) == 0)
+    {
+        n -= 3;
+    }
+    if (n == 0 || n >= out_len)
+    {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        char c = p[i];
+        if ((c < '0' || c > '9') && c != '_' && c != '.')
+        {
+            return false;
+        }
+    }
+    memcpy(out, p, n);
+    out[n] = '\0';
+    return true;
+}
+
 bool cat_proto_parse_if(const char *frame, uint8_t *mode_code, int32_t *rit_hz, bool *rit_on)
 {
     if (!frame || strncmp(frame, "IF", 2) != 0)

@@ -8,13 +8,49 @@
  * Call from any FreeRTOS task; functions are internally thread-safe.
  */
 #define DISP_MSG_CONNECT_USB "Waiting for device"
-#define DISP_MSG_USB_FOUND "Device detected"
-#define DISP_MSG_ENABLING_IQ "Preparing spectrum"
 #define DISP_MSG_DISCONNECTED "Device disconnected"
 
 /* Logical display dimensions after 90° CW rotation */
 #define DISP_LOGICAL_W 284
 #define DISP_LOGICAL_H 76
+
+/* Startup progress checklist. Fixed row order, one row per stage. */
+typedef enum
+{
+    DISP_STAGE_USB = 0,
+    DISP_STAGE_AUDIO,
+    DISP_STAGE_CAT,
+    DISP_STAGE_RADIO,
+    DISP_STAGE_IQ,
+    DISP_STAGE_SPECTRUM,
+    DISP_STAGE_COUNT,
+} disp_stage_t;
+
+typedef enum
+{
+    DISP_STAGE_PENDING = 0,
+    DISP_STAGE_ACTIVE,
+    DISP_STAGE_DONE,
+    DISP_STAGE_FAILED,
+} disp_stage_state_t;
+
+/*
+ * Show the progress checklist (idempotent; resets rows only when it was
+ * hidden). Safe from any task. Replaces the two-line status view.
+ */
+void display_show_progress(void);
+
+/*
+ * Update one stage; detail is right-aligned and may be NULL to keep the
+ * current text. No-op when the checklist is not on screen.
+ */
+void display_stage(disp_stage_t stage, disp_stage_state_t state, const char *detail);
+
+/*
+ * Called once the waterfall has produced its first frame: marks the
+ * spectrum stage done and hides the checklist.
+ */
+void display_progress_finish(void);
 
 /*
  * Initialise SPI bus, ST7789P3 panel and LVGL.

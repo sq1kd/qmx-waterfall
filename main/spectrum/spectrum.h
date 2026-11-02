@@ -41,6 +41,13 @@ void spectrum_set_filter_params(uint8_t mode_code, uint32_t filter_hz);
 /* Update CAT-driven mode/RIT used for marker and filter centering. */
 void spectrum_set_cat_tuning(uint8_t mode_code, int32_t rit_hz, bool rit_on);
 
+/*
+ * Erase waterfall history and the spectrum trace on the next frame.
+ * Used after IQ mode is restored: rows captured while the radio streamed
+ * audio instead of I/Q are not spectrum data.
+ */
+void spectrum_request_history_reset(void);
+
 /* Set CW beat frequency used for CW/CWR center offset. */
 void spectrum_set_cw_pitch_hz(uint16_t hz);
 
