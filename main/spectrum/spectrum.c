@@ -439,6 +439,17 @@ esp_err_t spectrum_fft_selftest(void)
     return ESP_OK;
 }
 
+bool spectrum_copy_canvas(uint16_t *dst, uint32_t pixels)
+{
+    if (!dst || !s.canvas_buf || pixels < (uint32_t)DISP_W * DISP_H)
+        return false;
+    if (!lvgl_port_lock(100))
+        return false;
+    memcpy(dst, s.canvas_buf, (size_t)DISP_W * DISP_H * sizeof(uint16_t));
+    lvgl_port_unlock();
+    return true;
+}
+
 void spectrum_get_stats(spectrum_stats_t *out)
 {
     if (!out)

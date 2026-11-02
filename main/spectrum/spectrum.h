@@ -12,6 +12,7 @@
 
 /* Number of dB columns the spectrum is rendered into (display width). */
 #define SPECTRUM_IQ_COLUMNS 284
+#define SPECTRUM_DISPLAY_HEIGHT 76
 
 /* What the strip above the waterfall shows. */
 #define SPECTRUM_MODE_TRACE 0      /* trace only                  */
@@ -87,6 +88,11 @@ esp_err_t spectrum_set_fft_impl(uint8_t impl);
 /* Compare the ANSI and AES3 FFTs on one deterministic block: gain, offset,
  * per-bin error and timing. Logs the result. */
 esp_err_t spectrum_fft_selftest(void);
+
+/* Copy the canvas we send to the panel (RGB565, SPECTRUM_IQ_COLUMNS x
+ * SPECTRUM_DISPLAY_HEIGHT) into dst. Taken under the LVGL port lock, so the
+ * snapshot is one whole frame. */
+bool spectrum_copy_canvas(uint16_t *dst, uint32_t pixels);
 
 /* Diagnostics. Counters are updated from the pipeline, so they are available
  * only while it runs. */

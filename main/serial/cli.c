@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "app/settings.h"
 #include "spectrum/spectrum.h"
@@ -177,9 +178,10 @@ static void cli_sp_stats(const char *line)
     ESP_LOGI(TAG, "[sp] level: min=%.1f max=%.1f std=%.2f dB, ripple %.2f dB @%.0f lines (4-line %.2f dB)",
              st.level_min_db, st.level_max_db, st.level_std_db,
              st.level_period_db, st.level_period_rows, st.level_period4_db);
-    ESP_LOGI(TAG, "[sp] health: internal=%luB psram=%luB stack_free=%luB",
-             (unsigned long)st.heap_internal_free, (unsigned long)st.heap_psram_free,
-             (unsigned long)st.stack_free_words);
+    ESP_LOGI(TAG, "[sp] health: internal=%luB (largest %luB) psram=%luB stack_free=%luB",
+             (unsigned long)st.heap_internal_free,
+             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned long)st.heap_psram_free, (unsigned long)st.stack_free_words);
     (void)line;
 }
 
@@ -283,6 +285,71 @@ static void cli_sp_iqdump(const char *line)
         ESP_LOGI(TAG, "DB %s", buf);
 }
 
+/* Dump the exact canvas we push to the panel: 284x76 RGB565 as hex, so a PC
+ * can reconstruct the image without a camera in the loop. */
+static void cli_sp_shot(const char *line)
+{
+    (void)line;
+    if (!spectrum_is_running())
+    {
+        ESP_LOGW(TAG, "[sp] shot: spectrum not running");
+        return;
+    }
+
+    const uint32_t pixels = SPECTRUM_IQ_COLUMNS * SPECTRUM_DISPLAY_HEIGHT;
+    /* The internal heap is fragmented by the canvas/ring allocations, so a
+     * 43 KB contiguous block is not guaranteed there: PSRAM is fine for a
+     * one-shot diagnostic copy. */
+    uint16_t *buf = heap_caps_malloc(pixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf)
+        buf = heap_caps_malloc(pixels * sizeof(uint16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf)
+    {
+        ESP_LOGW(TAG, "[sp] shot: no memory (largest internal %uB)",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        return;
+    }
+    if (!spectrum_copy_canvas(buf, pixels))
+    {
+        heap_caps_free(buf);
+        ESP_LOGW(TAG, "[sp] shot: lock failed");
+        return;
+    }
+
+    spectrum_stats_t st;
+    spectrum_get_stats(&st);
+    ESP_LOGI(TAG, "SHOT %u %u RGB565 fft=%s lines=%lu/%lu draws=%lu",
+             (unsigned)SPECTRUM_IQ_COLUMNS, (unsigned)SPECTRUM_DISPLAY_HEIGHT,
+             spectrum_get_fft_impl() ? "aes3" : "ansi",
+             (unsigned long)st.lines, (unsigned long)st.fft_frames,
+             (unsigned long)st.draws);
+
+    const uint8_t *raw = (const uint8_t *)buf;
+    char out[512];
+    size_t len = 0;
+    unsigned flushes = 0;
+    out[0] = '\0';
+    for (uint32_t i = 0; i < pixels * 2u; i++)
+    {
+        len += (size_t)snprintf(out + len, sizeof(out) - len, "%02X", raw[i]);
+        if (len >= sizeof(out) - 3)
+        {
+            ESP_LOGI(TAG, "SHOTDATA %s", out);
+            len = 0;
+            out[0] = '\0';
+            /* 86 KB at 115200 takes ~10 s. Yielding every 8th line keeps the
+             * idle task alive (a sub-tick delay would be a no-op at 100 Hz). */
+            if (++flushes % 8 == 0)
+                vTaskDelay(1);
+        }
+    }
+    if (len > 0)
+        ESP_LOGI(TAG, "SHOTDATA %s", out);
+    ESP_LOGI(TAG, "SHOTEND");
+
+    heap_caps_free(buf);
+}
+
 static void cli_sp_log(const char *line)
 {
     char tag[32] = {0};
@@ -336,7 +403,7 @@ static void cli_sp_status(const char *line)
              spectrum_get_fft_impl() ? "aes3" : "ansi");
     ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | "
                   "sp palette <0..6> | sp speed <1..N> | sp mode <trace|trace+peak|peak|off> | sp stats [reset] | "
-                  "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp log <tag> <level> | sp save | sp reset");
+                  "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp shot | sp log <tag> <level> | sp save | sp reset");
 }
 
 static const cmd_entry_t s_sp_cmds[] = {
@@ -354,6 +421,7 @@ static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp ffttest", .handler = cli_sp_fft_test},
     {.prefix = "sp fft ", .handler = cli_sp_fft},
     {.prefix = "sp iqdump", .handler = cli_sp_iqdump},
+    {.prefix = "sp shot", .handler = cli_sp_shot},
     {.prefix = "sp log ", .handler = cli_sp_log},
 };
 
@@ -418,6 +486,8 @@ static void monitor_cli_task(void *arg)
 
 void serial_cli_start(void)
 {
-    uart_driver_install(CLI_UART_NUM, 1024, 0, 0, NULL, 0);
+    /* TX ring buffer: without it, large writes spin on the FIFO instead of
+     * blocking (the `sp shot` dump is ~86 KB). */
+    uart_driver_install(CLI_UART_NUM, 1024, 4096, 0, NULL, 0);
     xTaskCreate(monitor_cli_task, "mon_cli", 4096, NULL, 1, NULL);
 }
