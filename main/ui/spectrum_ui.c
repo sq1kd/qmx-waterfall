@@ -32,12 +32,9 @@ typedef enum
     UI_SET_WF_FLOOR,
     UI_SET_WF_CEIL,
     UI_SET_CW_PITCH,
-    UI_SET_WF_GAMMA,
     UI_SET_WF_PALETTE,
-    UI_SET_SPEC_ALPHA,
-    UI_SET_WF_CONDENSE,
-    UI_SET_WF_BETA,
-    UI_SET_WF_BILINEAR,
+    UI_SET_WF_SPEED,
+    UI_SET_WF_PEAK,
     UI_SET_COUNT,
 } ui_setting_id_t;
 
@@ -92,18 +89,12 @@ static int ui_setting_to_slider(const app_settings_t *cfg, ui_setting_id_t id)
         return (int)(cfg->wf_ceil_db + (cfg->wf_ceil_db >= 0 ? 0.5f : -0.5f));
     case UI_SET_CW_PITCH:
         return (int)cfg->cw_pitch_hz;
-    case UI_SET_WF_GAMMA:
-        return (int)(cfg->wf_gamma * 100.0f + 0.5f);
     case UI_SET_WF_PALETTE:
         return (int)cfg->wf_palette;
-    case UI_SET_SPEC_ALPHA:
-        return (int)(cfg->spec_alpha * 1000.0f + 0.5f);
-    case UI_SET_WF_CONDENSE:
-        return (int)(cfg->wf_condense * 100.0f + 0.5f);
-    case UI_SET_WF_BETA:
-        return (int)(cfg->wf_temporal_beta * 1000.0f + 0.5f);
-    case UI_SET_WF_BILINEAR:
-        return cfg->wf_bilinear ? 1 : 0;
+    case UI_SET_WF_SPEED:
+        return (int)(cfg->speed_lps * 100.0f + 0.5f);
+    case UI_SET_WF_PEAK:
+        return cfg->peak ? 1 : 0;
     default:
         return 0;
     }
@@ -123,18 +114,12 @@ static const char *ui_setting_name(ui_setting_id_t id)
         return "WF ceil";
     case UI_SET_CW_PITCH:
         return "CW pitch";
-    case UI_SET_WF_GAMMA:
-        return "WF gamma";
     case UI_SET_WF_PALETTE:
         return "Palette";
-    case UI_SET_SPEC_ALPHA:
-        return "Spec alpha";
-    case UI_SET_WF_CONDENSE:
-        return "WF cond";
-    case UI_SET_WF_BETA:
-        return "WF beta";
-    case UI_SET_WF_BILINEAR:
-        return "Bilinear";
+    case UI_SET_WF_SPEED:
+        return "Speed";
+    case UI_SET_WF_PEAK:
+        return "Peak";
     default:
         return "Setting";
     }
@@ -164,27 +149,15 @@ static void ui_setting_range(ui_setting_id_t id, int *min, int *max)
         *min = 400;
         *max = 1000;
         break;
-    case UI_SET_WF_GAMMA:
-        *min = 50;
-        *max = 250;
-        break;
     case UI_SET_WF_PALETTE:
         *min = 0;
         *max = 6;
         break;
-    case UI_SET_SPEC_ALPHA:
-        *min = 10;
-        *max = 1000;
-        break;
-    case UI_SET_WF_CONDENSE:
+    case UI_SET_WF_SPEED:
         *min = 100;
-        *max = 300;
+        *max = 2500;
         break;
-    case UI_SET_WF_BETA:
-        *min = 0;
-        *max = 500;
-        break;
-    case UI_SET_WF_BILINEAR:
+    case UI_SET_WF_PEAK:
         *min = 0;
         *max = 1;
         break;
@@ -213,9 +186,6 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
         break;
     case UI_SET_CW_PITCH:
         snprintf(buf, n, "%u Hz", (unsigned)cfg->cw_pitch_hz);
-        break;
-    case UI_SET_WF_GAMMA:
-        snprintf(buf, n, "%.2f", cfg->wf_gamma);
         break;
     case UI_SET_WF_PALETTE:
         switch (cfg->wf_palette)
@@ -246,17 +216,11 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
             break;
         }
         break;
-    case UI_SET_SPEC_ALPHA:
-        snprintf(buf, n, "%.3f", cfg->spec_alpha);
+    case UI_SET_WF_SPEED:
+        snprintf(buf, n, "%.1f l/s", cfg->speed_lps);
         break;
-    case UI_SET_WF_CONDENSE:
-        snprintf(buf, n, "%.2f", cfg->wf_condense);
-        break;
-    case UI_SET_WF_BETA:
-        snprintf(buf, n, "%.2f", cfg->wf_temporal_beta);
-        break;
-    case UI_SET_WF_BILINEAR:
-        snprintf(buf, n, "%s", cfg->wf_bilinear ? "On" : "Off");
+    case UI_SET_WF_PEAK:
+        snprintf(buf, n, "%s", cfg->peak ? "On" : "Off");
         break;
     default:
         snprintf(buf, n, "-");
@@ -292,27 +256,15 @@ static void ui_apply_delta(ui_setting_id_t id, int dir)
     case UI_SET_CW_PITCH:
         (void)app_settings_set_cw_pitch_hz((uint16_t)clamp_i((int)cfg.cw_pitch_hz + 10 * dir, 400, 1000));
         break;
-    case UI_SET_WF_GAMMA:
-        (void)app_settings_set_wf_gamma(clamp_f(cfg.wf_gamma + 0.05f * (float)dir, 0.5f, 2.5f));
-        break;
     case UI_SET_WF_PALETTE:
         (void)app_settings_set_wf_palette((uint8_t)clamp_i((int)cfg.wf_palette + dir, 0, 6));
         break;
-    case UI_SET_SPEC_ALPHA:
-        (void)app_settings_set_spec_alpha(clamp_f(cfg.spec_alpha + 0.01f * (float)dir, 0.01f, 1.0f));
+    case UI_SET_WF_SPEED:
+        (void)app_settings_set_speed(clamp_f(cfg.speed_lps + 0.5f * (float)dir, 1.0f, 25.0f));
         break;
-    case UI_SET_WF_CONDENSE:
-        (void)app_settings_set_wf_condense(clamp_f(cfg.wf_condense + 0.05f * (float)dir, 1.0f, 3.0f));
+    case UI_SET_WF_PEAK:
+        (void)app_settings_set_peak(dir > 0);
         break;
-    case UI_SET_WF_BETA:
-        (void)app_settings_set_wf_temporal_beta(clamp_f(cfg.wf_temporal_beta + 0.01f * (float)dir, 0.0f, 0.5f));
-        break;
-    case UI_SET_WF_BILINEAR:
-    {
-        int next = clamp_i((cfg.wf_bilinear ? 1 : 0) + dir, 0, 1);
-        (void)app_settings_set_wf_bilinear(next != 0);
-    }
-    break;
     default:
         break;
     }

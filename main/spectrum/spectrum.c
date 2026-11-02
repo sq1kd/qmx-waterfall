@@ -9,11 +9,13 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
 #include "freertos/semphr.h"
 
 #include "display/display.h"
 #include "spectrum/dsp.h"
 #include "spectrum/freq_map.h"
+#include "spectrum/render.h"
 #include "spectrum/spectrum_priv.h"
 
 static const char *TAG = "spectrum";
@@ -31,6 +33,12 @@ typedef enum
 static SemaphoreHandle_t s_lifecycle_mutex;
 static spectrum_lifecycle_t s_lifecycle = SPEC_ST_STOPPED;
 static uint32_t s_init_failures;
+/* ANSI vs AES3 was pinned on hardware with `sp ffttest`: gain 1.000000,
+ * bias -0.000016 dB, max bin error 0.008 dB, AES3 ~1.6x faster. */
+static uint8_t s_fft_impl = SPECTRUM_FFT_AES3_AVAILABLE ? SPECTRUM_FFT_AES3 : SPECTRUM_FFT_ANSI;
+
+#define SPECTRUM_SPEED_MIN 1.0f
+#define SPECTRUM_SPEED_MAX 25.0f
 
 static bool spectrum_lock(TickType_t timeout)
 {
@@ -47,6 +55,12 @@ static void spectrum_unlock(void)
 {
     if (s_lifecycle_mutex)
         xSemaphoreGive(s_lifecycle_mutex);
+}
+
+static void spectrum_refresh_peak_decay(void)
+{
+    float speed = s.speed_lps > 0.0f ? s.speed_lps : 1.0f;
+    s.peak_decay_db = SPECTRUM_PEAK_DECAY_DB_PER_S / speed;
 }
 
 static void spectrum_cleanup_state(spectrum_state_t *st)
@@ -73,7 +87,6 @@ static void spectrum_cleanup_state(spectrum_state_t *st)
     free(st->window);
     free(st->fft_buf);
     free(st->wf_db);
-    free(st->spec_ema_db);
     if (!keep_canvas_buf)
     {
         free(st->canvas_buf);
@@ -105,32 +118,10 @@ void spectrum_update_marker_px(void)
                                              DISP_W);
 }
 
-void spectrum_rebuild_gamma_lut(void)
-{
-    float g = s.wf_gamma;
-    if (g < 0.5f)
-        g = 0.5f;
-    if (g > 2.5f)
-        g = 2.5f;
-    s.wf_gamma = g;
-
-    for (int i = 0; i < 256; i++)
-    {
-        float x = (float)i / 255.0f;
-        float y = powf(x, g);
-        int v = (int)(y * 255.0f + 0.5f);
-        if (v < 0)
-            v = 0;
-        if (v > 255)
-            v = 255;
-        s.wf_gamma_lut[i] = (uint8_t)v;
-    }
-}
-
 void spectrum_default_cfg(spectrum_cfg_t *cfg)
 {
     cfg->fft_size = 512;
-    cfg->lines_per_sec = 25.3f;
+    cfg->lines_per_sec = 25.0f;
     cfg->if_freq_hz = 12000;
 }
 
@@ -180,6 +171,8 @@ void spectrum_set_level_offset_db(float offset_db)
         offset_db = -80.0f;
     if (offset_db > 80.0f)
         offset_db = 80.0f;
+    /* Rows are stored without the offset: it is folded into the palette
+     * floor/ceiling at draw time, so history follows the setting. */
     s.level_offset_db = offset_db;
 }
 
@@ -189,11 +182,6 @@ void spectrum_set_view_mode(uint8_t mode)
         mode = 0;
     s.view_mode = mode;
     spectrum_update_marker_px();
-    if (s.spec_ema_db)
-    {
-        for (int i = 0; i < DISP_W; i++)
-            s.spec_ema_db[i] = s.wf_db_floor;
-    }
     ESP_LOGI(TAG, "[sp] view_mode=%u marker_px=%d", mode, s.marker_px);
 }
 
@@ -209,17 +197,6 @@ void spectrum_set_wf_range(float floor_db, float ceil_db)
     ESP_LOGI(TAG, "[sp] wf range: %.1f .. %.1f dB", floor_db, ceil_db);
 }
 
-void spectrum_set_wf_gamma(float gamma)
-{
-    if (gamma < 0.5f)
-        gamma = 0.5f;
-    if (gamma > 2.5f)
-        gamma = 2.5f;
-    s.wf_gamma = gamma;
-    spectrum_rebuild_gamma_lut();
-    ESP_LOGI(TAG, "[sp] gamma=%.2f", gamma);
-}
-
 void spectrum_set_wf_palette(uint8_t palette)
 {
     if (palette > 6)
@@ -228,77 +205,245 @@ void spectrum_set_wf_palette(uint8_t palette)
     ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
 }
 
-void spectrum_set_wf_condense(float factor)
+void spectrum_set_speed(float lines_per_sec)
 {
-    const float max_condense = (float)WF_CONDENSE_MAX_X100 / 100.0f;
-    if (factor < 1.0f)
-        factor = 1.0f;
-    if (factor > max_condense)
-        factor = max_condense;
-    s.wf_condense = factor;
-    ESP_LOGI(TAG, "[sp] wfcondense=%.2f", factor);
+    if (lines_per_sec < SPECTRUM_SPEED_MIN)
+        lines_per_sec = SPECTRUM_SPEED_MIN;
+    if (lines_per_sec > SPECTRUM_SPEED_MAX)
+        lines_per_sec = SPECTRUM_SPEED_MAX;
+
+    s.speed_lps = lines_per_sec;
+    s.line_period_us = (uint64_t)(1000000.0f / lines_per_sec);
+    spectrum_refresh_peak_decay();
+    ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.2f s history)", lines_per_sec,
+             (float)WF_DISP_H / lines_per_sec);
 }
 
-void spectrum_set_wf_temporal_beta(float beta)
+void spectrum_set_peak(bool enabled)
 {
-    if (beta < 0.0f)
-        beta = 0.0f;
-    if (beta > 0.5f)
-        beta = 0.5f;
-    s.wf_temporal_beta = beta;
-    ESP_LOGI(TAG, "[sp] wfbeta=%.2f", beta);
+    s.peak_enabled = enabled;
+    if (!enabled)
+    {
+        for (int i = 0; i < DISP_W; i++)
+            s.peak_db[i] = -32767.0f / SPECTRUM_DB_Q8;
+    }
+    ESP_LOGI(TAG, "[sp] peak=%u", enabled ? 1u : 0u);
 }
 
-void spectrum_set_wf_bilinear(bool enabled)
+uint8_t spectrum_get_fft_impl(void)
 {
-    s.wf_bilinear = enabled;
-    ESP_LOGI(TAG, "[sp] wfbilinear=%u", enabled ? 1 : 0);
+    return s.fft_impl;
 }
 
-void spectrum_set_spec_alpha(float alpha)
+esp_err_t spectrum_set_fft_impl(uint8_t impl)
 {
-    if (alpha <= 0.0f)
-        alpha = 0.01f;
-    if (alpha > 1.0f)
-        alpha = 1.0f;
-    s.spec_alpha = alpha;
-    ESP_LOGI(TAG, "[sp] alpha=%.2f", alpha);
+    if (impl == SPECTRUM_FFT_AES3)
+    {
+        if (!SPECTRUM_FFT_AES3_AVAILABLE)
+            return ESP_ERR_NOT_SUPPORTED;
+        s_fft_impl = SPECTRUM_FFT_AES3;
+    }
+    else
+    {
+        s_fft_impl = SPECTRUM_FFT_ANSI;
+    }
+    s.fft_impl = s_fft_impl;
+    ESP_LOGI(TAG, "[sp] fft=%s", s.fft_impl ? "aes3" : "ansi");
+    return ESP_OK;
 }
 
-void spectrum_get_runtime(float *level_offset_db,
-                          uint8_t *view_mode,
-                          float *wf_floor_db,
-                          float *wf_ceil_db,
-                          uint16_t *cw_pitch_hz,
-                          float *wf_gamma,
-                          uint8_t *wf_palette,
-                          float *spec_alpha,
-                          float *wf_condense,
-                          float *wf_temporal_beta,
-                          bool *wf_bilinear)
+esp_err_t spectrum_fft_selftest(void)
 {
-    if (level_offset_db)
-        *level_offset_db = s.level_offset_db;
-    if (view_mode)
-        *view_mode = s.view_mode;
-    if (wf_floor_db)
-        *wf_floor_db = s.wf_db_floor;
-    if (wf_ceil_db)
-        *wf_ceil_db = s.wf_db_ceil;
-    if (cw_pitch_hz)
-        *cw_pitch_hz = s.cw_pitch_hz;
-    if (wf_gamma)
-        *wf_gamma = s.wf_gamma;
-    if (wf_palette)
-        *wf_palette = s.wf_palette;
-    if (spec_alpha)
-        *spec_alpha = s.spec_alpha;
-    if (wf_condense)
-        *wf_condense = s.wf_condense;
-    if (wf_temporal_beta)
-        *wf_temporal_beta = s.wf_temporal_beta;
-    if (wf_bilinear)
-        *wf_bilinear = s.wf_bilinear;
+    enum { N = 512, ITERS = 200 };
+    const size_t buf_bytes = (size_t)N * 2 * sizeof(float);
+
+    if (!s.dsp_initialized)
+    {
+        esp_err_t r = dsps_fft2r_init_fc32(NULL, N);
+        if (r != ESP_OK && r != ESP_ERR_DSP_REINITIALIZED)
+        {
+            ESP_LOGE(TAG, "[sp] fft selftest: init failed: %s", esp_err_to_name(r));
+            return r;
+        }
+    }
+
+    float *a = heap_caps_aligned_alloc(16, buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    float *b = heap_caps_aligned_alloc(16, buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    float *ma = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    float *mb = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    float *win = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!a || !b || !ma || !mb || !win)
+    {
+        free(a);
+        free(b);
+        free(ma);
+        free(mb);
+        free(win);
+        return ESP_ERR_NO_MEM;
+    }
+
+    spectrum_build_hann_window(win, N);
+    const float two_pi = 6.283185307179586f;
+    uint32_t lcg = 0x12345678u;
+    for (int n = 0; n < N; n++)
+    {
+        float ph1 = two_pi * 0.137f * (float)n;
+        float ph2 = two_pi * 0.311f * (float)n + 0.7f;
+        lcg = lcg * 1664525u + 1013904223u;
+        float n1 = (float)(int32_t)lcg / 2147483648.0f;
+        lcg = lcg * 1664525u + 1013904223u;
+        float n2 = (float)(int32_t)lcg / 2147483648.0f;
+        float re = 0.40f * cosf(ph1) + 0.15f * cosf(ph2) + 0.002f * n1;
+        float im = 0.40f * sinf(ph1) + 0.15f * sinf(ph2 + 1.1f) + 0.002f * n2;
+        a[n * 2] = re * win[n];
+        a[n * 2 + 1] = im * win[n];
+    }
+    memcpy(b, a, buf_bytes);
+
+    spectrum_fft_power(a, N, SPECTRUM_FFT_ANSI, ma);
+    spectrum_fft_power(b, N, SPECTRUM_FFT_AES3, mb);
+
+    double max_abs = 0.0;
+    double sum_sq = 0.0;
+    double sum_diff = 0.0;
+    double sum_a = 0.0;
+    double sum_b = 0.0;
+    int worst_bin = 0;
+    for (int k = 0; k < N; k++)
+    {
+        double da = 10.0 * log10((double)ma[k] + 1e-12);
+        double db = 10.0 * log10((double)mb[k] + 1e-12);
+        double d = da - db;
+        double ad = fabs(d);
+        if (ad > max_abs)
+        {
+            max_abs = ad;
+            worst_bin = k;
+        }
+        sum_sq += d * d;
+        sum_diff += d;
+        sum_a += ma[k];
+        sum_b += mb[k];
+    }
+    double rms = sqrt(sum_sq / N);
+    double bias = sum_diff / N;
+    double gain = sum_b > 0.0 ? sum_a / sum_b : 0.0;
+
+    int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < ITERS; i++)
+        spectrum_fft_power(a, N, SPECTRUM_FFT_ANSI, ma);
+    int64_t t_ansi = (esp_timer_get_time() - t0) / ITERS;
+
+    int64_t t_aes3 = -1;
+#if SPECTRUM_FFT_AES3_AVAILABLE && defined(dsps_fft2r_fc32_aes3_enabled)
+    t0 = esp_timer_get_time();
+    for (int i = 0; i < ITERS; i++)
+        spectrum_fft_power(b, N, SPECTRUM_FFT_AES3, mb);
+    t_aes3 = (esp_timer_get_time() - t0) / ITERS;
+#endif
+
+    ESP_LOGI(TAG, "[sp] fft ab: max=%.6f dB @bin %d rms=%.6f dB bias=%.6f dB gain=%.6f",
+             max_abs, worst_bin, rms, bias, gain);
+    ESP_LOGI(TAG, "[sp] fft time: ansi=%lldus aes3=%lldus (N=%d, %d iters)",
+             (long long)t_ansi, (long long)t_aes3, N, ITERS);
+
+    free(a);
+    free(b);
+    free(ma);
+    free(mb);
+    free(win);
+    return ESP_OK;
+}
+
+void spectrum_get_stats(spectrum_stats_t *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+
+    out->fft_frames = s.st_fft_frames;
+    out->lines = s.st_lines;
+    out->draws = s.st_draws;
+    out->draws_skipped = s.st_draws_skipped;
+    out->read_calls = s.st_read_calls;
+    out->bytes_read = s.st_bytes_read;
+    {
+        uint64_t denom = (uint64_t)s.bytes_per_sample * s.channels * s.sample_freq;
+        out->audio_us = denom ? (s.st_bytes_read * 1000000ULL) / denom : 0;
+    }
+    out->run_us = s.st_run_us_start ? (uint64_t)(esp_timer_get_time() - (int64_t)s.st_run_us_start) : 0;
+    out->sample_freq = s.sample_freq;
+    out->frame_bytes = (uint32_t)s.bytes_per_sample * s.channels;
+    out->draw_us_last = s.st_draw_us_last;
+    out->draw_us_avg = s.st_draw_us_avg;
+    out->draw_us_max = s.st_draw_us_max;
+    out->lock_wait_us_max = s.st_lock_wait_us_max;
+    if (s.task_handle)
+        out->stack_free_words = (uint32_t)uxTaskGetStackHighWaterMark(s.task_handle);
+    out->heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    out->heap_psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+}
+
+void spectrum_reset_stats(void)
+{
+    s.st_fft_frames = 0;
+    s.st_lines = 0;
+    s.st_draws = 0;
+    s.st_draws_skipped = 0;
+    s.st_read_calls = 0;
+    s.st_bytes_read = 0;
+    s.st_run_us_start = 0;
+    s.st_draw_us_last = 0;
+    s.st_draw_us_avg = 0;
+    s.st_draw_us_max = 0;
+    s.st_lock_wait_us_max = 0;
+}
+
+bool spectrum_capture_iq_block(void)
+{
+    if (!s.running || s.wf_db == NULL)
+        return false;
+    s.iq_frames = 0;
+    s.iq_capture_state = 1;
+    return true;
+}
+
+uint32_t spectrum_get_iq_block(spectrum_iq_block_info_t *info,
+                               uint8_t *raw,
+                               uint32_t raw_cap,
+                               int16_t *db_q8,
+                               uint32_t db_cap)
+{
+    if (s.iq_capture_state != 2)
+        return 0;
+
+    uint32_t frames = s.iq_frames;
+    uint32_t fb = s.iq_frame_bytes;
+
+    if (raw && frames > 0 && fb > 0)
+    {
+        uint32_t max_frames = raw_cap / fb;
+        if (frames > max_frames)
+            frames = max_frames;
+        for (uint32_t f = 0; f < frames; f++)
+        {
+            memcpy(raw + (size_t)f * fb, &s.iq_raw[(size_t)f * 8], fb);
+        }
+    }
+
+    if (db_q8 && db_cap >= DISP_W)
+        memcpy(db_q8, s.iq_db, sizeof(s.iq_db));
+
+    if (info)
+    {
+        info->frames = frames;
+        info->frame_bytes = fb;
+        info->fft_size = s.iq_fft_size;
+        info->view_mode = s.iq_view_mode;
+    }
+
+    s.iq_capture_state = 0;
+    return frames;
 }
 
 esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
@@ -335,15 +480,24 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
 
     s.wf_db_floor = -140.0f;
     s.wf_db_ceil = 10.0f;
-    s.wf_gamma = 1.0f;
     s.wf_palette = 4;
-    s.wf_condense = 2.0f;
-    s.wf_temporal_beta = 0.0f;
-    s.wf_bilinear = true;
-    s.spec_alpha = 0.25f;
     s.view_mode = 0;
     s.cw_pitch_hz = 700;
-    spectrum_rebuild_gamma_lut();
+    s.peak_enabled = true;
+    s.fft_impl = s_fft_impl;
+    s.speed_lps = cfg->lines_per_sec;
+    if (s.speed_lps < SPECTRUM_SPEED_MIN)
+        s.speed_lps = SPECTRUM_SPEED_MIN;
+    if (s.speed_lps > SPECTRUM_SPEED_MAX)
+        s.speed_lps = SPECTRUM_SPEED_MAX;
+    s.line_period_us = (uint64_t)(1000000.0f / s.speed_lps);
+    spectrum_refresh_peak_decay();
+
+    for (int i = 0; i < DISP_W; i++)
+    {
+        s.line_db[i] = s.wf_db_floor;
+        s.peak_db[i] = s.wf_db_floor;
+    }
 
     const size_t buf_bytes = (size_t)DISP_W * DISP_H * sizeof(uint16_t);
     s.canvas_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -361,8 +515,10 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         lvgl_port_unlock();
     }
 
+    /* The ESP32-S3 AES3 FFT uses 128-bit PIE loads: keep the buffer 16-byte
+     * aligned so both implementations see the same input. */
     const size_t fft_bytes = (size_t)cfg->fft_size * 2 * sizeof(float);
-    s.fft_buf = heap_caps_malloc(fft_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s.fft_buf = heap_caps_aligned_alloc(16, fft_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!s.fft_buf)
     {
         ESP_LOGE(TAG, "fft_buf alloc failed");
@@ -382,46 +538,25 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     }
     spectrum_build_hann_window(s.window, (int)cfg->fft_size);
 
-    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0)
-    {
-        ESP_LOGE(TAG, "PSRAM not initialized; wf_db requires SPIRAM");
-        spectrum_cleanup_state(&s);
-        spectrum_mark_init_failed();
-        return ESP_ERR_NO_MEM;
-    }
-
-    const size_t wf_bytes = (size_t)WF_STORE_H * DISP_W * sizeof(float);
-    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
-    ESP_LOGD(TAG, "PSRAM before wf_db alloc: free=%u largest=%u", (unsigned)psram_free, (unsigned)psram_largest);
-
-    s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* One stored row per displayed row: int16 q8 dB, internal RAM (28 KB). */
+    const size_t wf_bytes = (size_t)WF_STORE_H * DISP_W * sizeof(int16_t);
+    s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!s.wf_db)
     {
-        ESP_LOGE(TAG, "wf_db SPIRAM alloc failed (%u bytes), free=%u largest=%u",
-                 (unsigned)wf_bytes,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        ESP_LOGE(TAG, "wf_db alloc failed (%u bytes), internal free=%u",
+                 (unsigned)wf_bytes, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         spectrum_cleanup_state(&s);
         spectrum_mark_init_failed();
         return ESP_ERR_NO_MEM;
     }
-    for (int i = 0; i < WF_STORE_H * DISP_W; i++)
-        s.wf_db[i] = s.wf_db_floor;
+    const int16_t floor_q8 = spectrum_db_to_q8(s.wf_db_floor);
+    for (size_t i = 0; i < (size_t)WF_STORE_H * DISP_W; i++)
+        s.wf_db[i] = floor_q8;
     s.wf_write_idx = 0;
 
-    s.spec_ema_db = heap_caps_malloc((size_t)DISP_W * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s.spec_ema_db)
-    {
-        ESP_LOGE(TAG, "spec_ema_db alloc failed");
-        spectrum_cleanup_state(&s);
-        spectrum_mark_init_failed();
-        return ESP_ERR_NO_MEM;
-    }
-    for (int i = 0; i < DISP_W; i++)
-        s.spec_ema_db[i] = s.wf_db_floor;
-
     esp_err_t ret = dsps_fft2r_init_fc32(NULL, (int)cfg->fft_size);
+    if (ret == ESP_ERR_DSP_REINITIALIZED)
+        ret = ESP_OK; /* the FFT self test already built the tables */
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "dsps_fft2r_init_fc32 failed: %s", esp_err_to_name(ret));
@@ -448,9 +583,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         spectrum_unlock();
     }
 
-    ESP_LOGD(TAG, "Spectrum init OK — FFT %u, %.1f fps, wf %dx%d (%.1f KB)",
-             cfg->fft_size, cfg->lines_per_sec, DISP_W, WF_DISP_H,
-             (float)wf_bytes / 1024.0f);
+    ESP_LOGI(TAG, "Spectrum init OK - FFT %u, %.1f lines/s, wf %dx%d q8 (%.1f KB, internal)",
+             cfg->fft_size, s.speed_lps, DISP_W, WF_DISP_H, (float)wf_bytes / 1024.0f);
     return ESP_OK;
 }
 

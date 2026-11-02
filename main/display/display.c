@@ -283,7 +283,13 @@ void display_init(void)
     /* ------------------------------------------------------------------ */
     /* 5. LVGL port init                                                   */
     /* ------------------------------------------------------------------ */
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    /* Core 1: the spectrum pipeline draws under the port lock on core 1, and
+     * core 0 belongs to the USB host library and the UAC task (priority 3).
+     * A full-frame render+flush on core 0 preempts the isochronous IN
+     * resubmission and costs audio packets; keep the two apart. */
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_cfg.task_affinity = 1;
+    lvgl_cfg.task_priority = 3;
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     /* Physical portrait dimensions — rotation is applied by lvgl_port on every
@@ -389,7 +395,8 @@ bool display_spectrum_detach(void)
     /* The pipeline is stopped by the caller, so the lock is normally free;
      * the timeout only guards against a wedged LVGL task, where handing the
      * caller a "still attached" answer beats deadlocking the teardown. */
-    if (!lvgl_port_lock(pdMS_TO_TICKS(100)))
+    /* lvgl_port_lock() takes milliseconds (0 would mean "wait forever"). */
+    if (!lvgl_port_lock(100))
         return false;
 
     display_canvas_destroy_locked();

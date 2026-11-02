@@ -2,51 +2,43 @@
 
 #include <stdint.h>
 
+/* Waterfall rows are stored as signed dB in 1/8 dB units (q8). */
+#define SPECTRUM_DB_Q8 8.0f
+
 uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b);
 
-void spectrum_draw_spectrum_strip(uint16_t *canvas_buf,
-                                  int disp_w,
-                                  int spec_h,
-                                  const float *mag,
-                                  int mag_len,
-                                  float db_floor,
-                                  float db_ceil,
-                                  float level_offset_db,
-                                  uint16_t bg,
-                                  uint16_t fg);
+int16_t spectrum_db_to_q8(float db);
 
+/* Spectrum trace on top of the canvas. peak_vals may be NULL. */
 void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                                      int disp_w,
                                      int spec_h,
                                      const float *db_vals,
-                                     int db_len,
+                                     const float *peak_vals,
                                      float db_floor,
                                      float db_ceil,
                                      uint16_t bg,
-                                     uint16_t fg);
+                                     uint16_t fg,
+                                     uint16_t peak_fg);
 
+/* One pixel row per stored row: no resampling, no interpolation. Row 0 is the
+ * most recent line, so the image scrolls down by exactly one row per line. */
 void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int disp_w,
                              int wf_disp_h,
                              int wf_y0,
-                             const float *wf_db,
+                             const int16_t *wf_db_q8,
                              uint32_t wf_write_idx,
                              int wf_store_h,
-                             float wf_condense,
-                             float temporal_beta,
-                             int bilinear,
                              float db_floor,
                              float db_ceil,
-                             const uint8_t *gamma_lut,
                              uint8_t palette);
 
-void spectrum_store_wf_row(float *wf_db,
+void spectrum_store_wf_row(int16_t *wf_db_q8,
                            uint32_t *wf_write_idx,
                            int wf_store_h,
                            int disp_w,
-                           const float *mag,
-                           int mag_len,
-                           float level_offset_db);
+                           const float *db_vals);
 
 void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
                                   int disp_w,

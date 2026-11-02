@@ -2,9 +2,33 @@
 
 #include <math.h>
 
+#include "esp_dsp.h"
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846f
 #endif
+
+void spectrum_fft_power(float *cf, uint32_t n, uint8_t impl, float *mag)
+{
+    if (!cf || !mag || n == 0)
+        return;
+
+#if SPECTRUM_FFT_AES3_AVAILABLE && defined(dsps_fft2r_fc32_aes3_enabled)
+    if (impl == SPECTRUM_FFT_AES3)
+        dsps_fft2r_fc32_aes3(cf, (int)n);
+    else
+#endif
+        dsps_fft2r_fc32_ansi(cf, (int)n);
+
+    dsps_bit_rev_fc32(cf, (int)n);
+
+    for (uint32_t k = 0; k < n; k++)
+    {
+        float re = cf[k * 2];
+        float im = cf[k * 2 + 1];
+        mag[k] = re * re + im * im;
+    }
+}
 
 void spectrum_fftshift_mag(float *mag, int len)
 {

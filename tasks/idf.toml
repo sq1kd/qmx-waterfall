@@ -74,3 +74,7 @@ run = 'exec tools/idf-env.sh idf.py ${ESPPORT:+-p "$ESPPORT"} monitor'
 [size]
 description = "Print firmware size information"
 run = "tools/idf-env.sh idf.py size"
+
+[test]
+description = "Host tests for the spectrum drawing math"
+run = "test/run.sh"

@@ -7,6 +7,7 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "app/settings.h"
+#include "spectrum/spectrum.h"
 
 #define CLI_UART_NUM UART_NUM_0
 #define CLI_BUF_SZ 128
@@ -21,7 +22,7 @@ typedef struct
     cmd_handler_t handler;
 } cmd_entry_t;
 
-static void cmd_sp_off(const char *line)
+static void cli_sp_off(const char *line)
 {
     float val = 0.0f;
     if (sscanf(line, "sp off %f", &val) == 1)
@@ -33,7 +34,7 @@ static void cmd_sp_off(const char *line)
     }
 }
 
-static void cmd_sp_view(const char *line)
+static void cli_sp_view(const char *line)
 {
     int mode = -1;
     if (sscanf(line, "sp view %d", &mode) == 1)
@@ -45,7 +46,7 @@ static void cmd_sp_view(const char *line)
     }
 }
 
-static void cmd_sp_range(const char *line)
+static void cli_sp_range(const char *line)
 {
     float floor_db = 0.0f, ceil_db = 0.0f;
     if (sscanf(line, "sp range %f %f", &floor_db, &ceil_db) == 2)
@@ -61,7 +62,7 @@ static void cmd_sp_range(const char *line)
     }
 }
 
-static void cmd_sp_cwbfo(const char *line)
+static void cli_sp_cwbfo(const char *line)
 {
     int hz = 0;
     if (sscanf(line, "sp cwbfo %d", &hz) == 1)
@@ -77,23 +78,7 @@ static void cmd_sp_cwbfo(const char *line)
     }
 }
 
-static void cmd_sp_gamma(const char *line)
-{
-    float gamma = 1.0f;
-    if (sscanf(line, "sp gamma %f", &gamma) == 1)
-    {
-        (void)app_settings_set_wf_gamma(gamma);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] gamma=%.2f", cfg.wf_gamma);
-    }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp gamma <0.5..2.5>");
-    }
-}
-
-static void cmd_sp_palette(const char *line)
+static void cli_sp_palette(const char *line)
 {
     int pal = 0;
     if (sscanf(line, "sp palette %d", &pal) == 1)
@@ -101,7 +86,8 @@ static void cmd_sp_palette(const char *line)
         (void)app_settings_set_wf_palette((uint8_t)pal);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma 6=sdr_bluehot)", (unsigned)cfg.wf_palette);
+        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma 6=sdr_bluehot)",
+                 (unsigned)cfg.wf_palette);
     }
     else
     {
@@ -109,104 +95,244 @@ static void cmd_sp_palette(const char *line)
     }
 }
 
-static void cmd_sp_alpha(const char *line)
+static void cli_sp_speed(const char *line)
 {
-    float a = 0.25f;
-    if (sscanf(line, "sp alpha %f", &a) == 1)
+    float lps = 0.0f;
+    if (sscanf(line, "sp speed %f", &lps) == 1)
     {
-        (void)app_settings_set_spec_alpha(a);
+        (void)app_settings_set_speed(lps);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] alpha=%.2f", cfg.spec_alpha);
+        ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.1f s of history)", cfg.speed_lps,
+                 51.0f / cfg.speed_lps);
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp alpha <0.01..1.0>");
+        ESP_LOGI(TAG, "[sp] usage: sp speed <1..25>");
     }
 }
 
-static void cmd_sp_wfcondense(const char *line)
+static void cli_sp_peak(const char *line)
 {
-    float f = 2.0f;
-    if (sscanf(line, "sp wfcondense %f", &f) == 1)
+    int en = -1;
+    if (sscanf(line, "sp peak %d", &en) == 1)
     {
-        (void)app_settings_set_wf_condense(f);
+        (void)app_settings_set_peak(en != 0);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] wfcondense=%.2f", cfg.wf_condense);
+        ESP_LOGI(TAG, "[sp] peak=%u", cfg.peak ? 1u : 0u);
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp wfcondense <1.0..3.0>");
+        ESP_LOGI(TAG, "[sp] usage: sp peak <0|1>");
     }
 }
 
-static void cmd_sp_wfbeta(const char *line)
+static void cli_sp_stats(const char *line)
 {
-    float b = 0.0f;
-    if (sscanf(line, "sp wfbeta %f", &b) == 1)
+    spectrum_stats_t st;
+    spectrum_get_stats(&st);
+
+    uint64_t expected = (uint64_t)st.sample_freq * st.frame_bytes * st.run_us / 1000000ULL;
+    int deficits_x100 = 0;
+    if (expected > 0)
     {
-        (void)app_settings_set_wf_temporal_beta(b);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] wfbeta=%.2f", cfg.wf_temporal_beta);
+        uint64_t deficit = expected > st.bytes_read ? expected - st.bytes_read : 0;
+        deficits_x100 = (int)((deficit * 10000ULL) / expected);
+    }
+
+    ESP_LOGI(TAG, "[sp] stats: fft=%lu lines=%lu draws=%lu skipped=%lu",
+             (unsigned long)st.fft_frames, (unsigned long)st.lines,
+             (unsigned long)st.draws, (unsigned long)st.draws_skipped);
+    ESP_LOGI(TAG, "[sp] audio: read=%lluB in %lluB expected (%d.%02d%% missing), calls=%lu, %lums audio / %lums wall",
+             (unsigned long long)st.bytes_read, (unsigned long long)expected,
+             deficits_x100 / 100, deficits_x100 % 100,
+             (unsigned long)st.read_calls,
+             (unsigned long)(st.audio_us / 1000), (unsigned long)(st.run_us / 1000));
+    ESP_LOGI(TAG, "[sp] draw: last=%luus avg=%luus max=%luus, lock wait max=%luus",
+             (unsigned long)st.draw_us_last, (unsigned long)st.draw_us_avg,
+             (unsigned long)st.draw_us_max, (unsigned long)st.lock_wait_us_max);
+    ESP_LOGI(TAG, "[sp] health: internal=%luB psram=%luB stack_free=%luB",
+             (unsigned long)st.heap_internal_free, (unsigned long)st.heap_psram_free,
+             (unsigned long)st.stack_free_words);
+    (void)line;
+}
+
+static void cli_sp_stats_reset(const char *line)
+{
+    spectrum_reset_stats();
+    ESP_LOGI(TAG, "[sp] stats reset");
+    (void)line;
+}
+
+static void cli_sp_fft(const char *line)
+{
+    char impl[8] = {0};
+    if (sscanf(line, "sp fft %7s", impl) == 1)
+    {
+        uint8_t want = (strcmp(impl, "aes3") == 0) ? 1 : 0;
+        esp_err_t err = spectrum_set_fft_impl(want);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "[sp] fft %s unavailable: %s", impl, esp_err_to_name(err));
+        }
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp wfbeta <0.0..0.5>");
+        ESP_LOGI(TAG, "[sp] fft=%s (sp fft <ansi|aes3>, then sp ffttest)",
+                 spectrum_get_fft_impl() ? "aes3" : "ansi");
     }
 }
 
-static void cmd_sp_wfbilinear(const char *line)
+static void cli_sp_fft_test(const char *line)
 {
-    int en = 0;
-    if (sscanf(line, "sp wfbilinear %d", &en) == 1)
-    {
-        (void)app_settings_set_wf_bilinear(en != 0);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] wfbilinear=%u", cfg.wf_bilinear ? 1u : 0u);
-    }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp wfbilinear <0|1>");
-    }
+    esp_err_t err = spectrum_fft_selftest();
+    ESP_LOGI(TAG, "[sp] ffttest: %s", esp_err_to_name(err));
+    (void)line;
 }
 
-static void cmd_sp_save(const char *line)
+/* Raw I/Q capture: 512 frames of up to 8 bytes each, plus the 284 column dB
+ * values the firmware derives from the same block. Buffers live in .bss so the
+ * CLI task stack stays small. */
+#define IQ_MAX_FRAMES 512
+#define IQ_MAX_FRAME_BYTES 8
+static uint8_t s_iq_raw[IQ_MAX_FRAMES * IQ_MAX_FRAME_BYTES];
+static int16_t s_iq_db[SPECTRUM_IQ_COLUMNS];
+
+static void cli_sp_iqdump(const char *line)
+{
+    (void)line;
+    if (!spectrum_capture_iq_block())
+    {
+        ESP_LOGW(TAG, "[sp] iqdump: spectrum not running");
+        return;
+    }
+
+    spectrum_iq_block_info_t info = {0};
+    uint32_t frames = 0;
+    for (int i = 0; i < 100; i++)
+    {
+        frames = spectrum_get_iq_block(&info, s_iq_raw, sizeof(s_iq_raw), s_iq_db, SPECTRUM_IQ_COLUMNS);
+        if (frames > 0)
+            break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (frames == 0)
+    {
+        ESP_LOGW(TAG, "[sp] iqdump: no block captured");
+        return;
+    }
+
+    ESP_LOGI(TAG, "IQ %lu %lu %u %u", (unsigned long)frames, (unsigned long)info.frame_bytes,
+             (unsigned)info.fft_size, (unsigned)info.view_mode);
+
+    char buf[200];
+    size_t len = 0;
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < frames * info.frame_bytes; i++)
+    {
+        len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%02X", s_iq_raw[i]);
+        if (len >= 160)
+        {
+            ESP_LOGI(TAG, "IQDATA %s", buf);
+            len = 0;
+            buf[0] = '\0';
+        }
+    }
+    if (len > 0)
+        ESP_LOGI(TAG, "IQDATA %s", buf);
+
+    len = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < SPECTRUM_IQ_COLUMNS; i++)
+    {
+        len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%d ", s_iq_db[i]);
+        if (len >= 160)
+        {
+            ESP_LOGI(TAG, "DB %s", buf);
+            len = 0;
+            buf[0] = '\0';
+        }
+    }
+    if (len > 0)
+        ESP_LOGI(TAG, "DB %s", buf);
+}
+
+static void cli_sp_log(const char *line)
+{
+    char tag[32] = {0};
+    char lvl[16] = {0};
+    if (sscanf(line, "sp log %31s %15s", tag, lvl) != 2)
+    {
+        ESP_LOGI(TAG, "[sp] usage: sp log <tag> <none|error|warn|info|debug|verbose>");
+        return;
+    }
+
+    esp_log_level_t level = ESP_LOG_INFO;
+    if (strcmp(lvl, "none") == 0)
+        level = ESP_LOG_NONE;
+    else if (strcmp(lvl, "error") == 0)
+        level = ESP_LOG_ERROR;
+    else if (strcmp(lvl, "warn") == 0)
+        level = ESP_LOG_WARN;
+    else if (strcmp(lvl, "debug") == 0)
+        level = ESP_LOG_DEBUG;
+    else if (strcmp(lvl, "verbose") == 0)
+        level = ESP_LOG_VERBOSE;
+
+    esp_log_level_set(tag, level);
+    ESP_LOGI(TAG, "[sp] log %s=%s", tag, lvl);
+}
+
+static void cli_sp_save(const char *line)
 {
     (void)line;
     esp_err_t err = app_settings_flush_now();
     ESP_LOGI(TAG, "[sp] save: %s", esp_err_to_name(err));
 }
 
-static void cmd_sp_reset(const char *line)
+static void cli_sp_reset(const char *line)
 {
     (void)line;
     esp_err_t err = app_settings_reset_to_defaults(true);
     ESP_LOGI(TAG, "[sp] reset: %s", esp_err_to_name(err));
 }
 
+static void cli_sp_status(const char *line)
+{
+    (void)line;
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%.1f peak=%u fft=%s",
+             cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db,
+             (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette, cfg.speed_lps,
+             cfg.peak ? 1u : 0u, spectrum_get_fft_impl() ? "aes3" : "ansi");
+    ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | "
+                  "sp palette <0..6> | sp speed <1..25> | sp peak <0|1> | sp stats [reset] | "
+                  "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp log <tag> <level> | sp save | sp reset");
+}
+
 static const cmd_entry_t s_sp_cmds[] = {
-    {.prefix = "sp save", .handler = cmd_sp_save},
-    {.prefix = "sp reset", .handler = cmd_sp_reset},
-    {.prefix = "sp off ", .handler = cmd_sp_off},
-    {.prefix = "sp view ", .handler = cmd_sp_view},
-    {.prefix = "sp range ", .handler = cmd_sp_range},
-    {.prefix = "sp cwbfo ", .handler = cmd_sp_cwbfo},
-    {.prefix = "sp gamma ", .handler = cmd_sp_gamma},
-    {.prefix = "sp palette ", .handler = cmd_sp_palette},
-    {.prefix = "sp alpha ", .handler = cmd_sp_alpha},
-    {.prefix = "sp wfcondense ", .handler = cmd_sp_wfcondense},
-    {.prefix = "sp wfbeta ", .handler = cmd_sp_wfbeta},
-    {.prefix = "sp wfbilinear ", .handler = cmd_sp_wfbilinear},
+    {.prefix = "sp stats reset", .handler = cli_sp_stats_reset},
+    {.prefix = "sp stats", .handler = cli_sp_stats},
+    {.prefix = "sp save", .handler = cli_sp_save},
+    {.prefix = "sp reset", .handler = cli_sp_reset},
+    {.prefix = "sp off ", .handler = cli_sp_off},
+    {.prefix = "sp view ", .handler = cli_sp_view},
+    {.prefix = "sp range ", .handler = cli_sp_range},
+    {.prefix = "sp cwbfo ", .handler = cli_sp_cwbfo},
+    {.prefix = "sp palette ", .handler = cli_sp_palette},
+    {.prefix = "sp speed ", .handler = cli_sp_speed},
+    {.prefix = "sp peak ", .handler = cli_sp_peak},
+    {.prefix = "sp ffttest", .handler = cli_sp_fft_test},
+    {.prefix = "sp fft ", .handler = cli_sp_fft},
+    {.prefix = "sp iqdump", .handler = cli_sp_iqdump},
+    {.prefix = "sp log ", .handler = cli_sp_log},
 };
 
 static void handle_cli_line(const char *line)
 {
-    size_t i;
-
-    for (i = 0; i < sizeof(s_sp_cmds) / sizeof(s_sp_cmds[0]); i++)
+    for (size_t i = 0; i < sizeof(s_sp_cmds) / sizeof(s_sp_cmds[0]); i++)
     {
         size_t n = strlen(s_sp_cmds[i].prefix);
         if (strncmp(line, s_sp_cmds[i].prefix, n) == 0)
@@ -218,12 +344,7 @@ static void handle_cli_line(const char *line)
 
     if (strncmp(line, "sp", 2) == 0)
     {
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u gamma=%.2f pal=%u alpha=%.2f wfcondense=%.2f wfbeta=%.2f wfbilinear=%u",
-                 cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db, (unsigned)cfg.cw_pitch_hz,
-                 cfg.wf_gamma, (unsigned)cfg.wf_palette, cfg.spec_alpha, cfg.wf_condense, cfg.wf_temporal_beta, cfg.wf_bilinear ? 1 : 0);
-        ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | sp gamma <0.5..2.5> | sp palette <0..6> | sp alpha <0.01..1.0> | sp wfcondense <1.0..3.0> | sp wfbeta <0.0..0.5> | sp wfbilinear <0|1> | sp save | sp reset");
+        cli_sp_status(line);
     }
 }
 

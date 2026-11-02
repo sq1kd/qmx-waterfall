@@ -9,7 +9,11 @@
 #include "spectrum/spectrum.h"
 
 #define SETTINGS_NAMESPACE "app_settings"
-#define SETTINGS_SCHEMA_VER 1U
+/* Schema 2: gamma, alpha, condense, temporal beta and bilinear are gone.
+ * The display is driven by level, span, floor/ceil, palette, speed and peak. */
+#define SETTINGS_SCHEMA_VER 2U
+#define SPECTRUM_SPEED_MIN 1.0f
+#define SPECTRUM_SPEED_MAX 25.0f
 #define SETTINGS_SAVE_DEBOUNCE_US (1500ULL * 1000ULL)
 
 static const char *TAG = "settings";
@@ -38,12 +42,9 @@ void app_settings_defaults(app_settings_t *cfg)
     cfg->wf_floor_db = -140.0f;
     cfg->wf_ceil_db = 10.0f;
     cfg->cw_pitch_hz = 700;
-    cfg->wf_gamma = 1.0f;
     cfg->wf_palette = 4;
-    cfg->spec_alpha = 0.25f;
-    cfg->wf_condense = 2.0f;
-    cfg->wf_temporal_beta = 0.0f;
-    cfg->wf_bilinear = true;
+    cfg->speed_lps = 25.0f;
+    cfg->peak = true;
 }
 
 static bool app_settings_validate_and_repair(app_settings_t *cfg)
@@ -77,29 +78,15 @@ static bool app_settings_validate_and_repair(app_settings_t *cfg)
         cfg->cw_pitch_hz = def.cw_pitch_hz;
         repaired = true;
     }
-    if (!isfinite(cfg->wf_gamma) || cfg->wf_gamma < 0.5f || cfg->wf_gamma > 2.5f)
-    {
-        cfg->wf_gamma = def.wf_gamma;
-        repaired = true;
-    }
     if (cfg->wf_palette > 6)
     {
         cfg->wf_palette = def.wf_palette;
         repaired = true;
     }
-    if (!isfinite(cfg->spec_alpha) || cfg->spec_alpha <= 0.0f || cfg->spec_alpha > 1.0f)
+    if (!isfinite(cfg->speed_lps) || cfg->speed_lps < SPECTRUM_SPEED_MIN ||
+        cfg->speed_lps > SPECTRUM_SPEED_MAX)
     {
-        cfg->spec_alpha = def.spec_alpha;
-        repaired = true;
-    }
-    if (!isfinite(cfg->wf_condense) || cfg->wf_condense < 1.0f || cfg->wf_condense > 3.0f)
-    {
-        cfg->wf_condense = def.wf_condense;
-        repaired = true;
-    }
-    if (!isfinite(cfg->wf_temporal_beta) || cfg->wf_temporal_beta < 0.0f || cfg->wf_temporal_beta > 0.5f)
-    {
-        cfg->wf_temporal_beta = def.wf_temporal_beta;
+        cfg->speed_lps = def.speed_lps;
         repaired = true;
     }
 
@@ -138,6 +125,7 @@ static esp_err_t app_settings_load(void)
     if (schema != SETTINGS_SCHEMA_VER)
     {
         ESP_LOGW(TAG, "settings schema %lu unsupported, using defaults", (unsigned long)schema);
+        s_dirty = true; /* persist the current schema with its defaults */
         nvs_close(h);
         return ESP_OK;
     }
@@ -156,18 +144,12 @@ static esp_err_t app_settings_load(void)
         s_cfg.wf_ceil_db = (float)i32 / 10.0f;
     if (nvs_get_u32(h, "sp_cwbfo", &u32) == ESP_OK)
         s_cfg.cw_pitch_hz = (uint16_t)u32;
-    if (nvs_get_u32(h, "sp_gamma_x100", &u32) == ESP_OK)
-        s_cfg.wf_gamma = (float)u32 / 100.0f;
     if (nvs_get_u8(h, "sp_palette", &u8) == ESP_OK)
         s_cfg.wf_palette = u8;
-    if (nvs_get_u32(h, "sp_alpha_x1000", &u32) == ESP_OK)
-        s_cfg.spec_alpha = (float)u32 / 1000.0f;
-    if (nvs_get_u32(h, "sp_cond_x100", &u32) == ESP_OK)
-        s_cfg.wf_condense = (float)u32 / 100.0f;
-    if (nvs_get_u32(h, "sp_beta_x1000", &u32) == ESP_OK)
-        s_cfg.wf_temporal_beta = (float)u32 / 1000.0f;
-    if (nvs_get_u8(h, "sp_bilin", &u8) == ESP_OK)
-        s_cfg.wf_bilinear = (u8 != 0);
+    if (nvs_get_u32(h, "sp_speed_x100", &u32) == ESP_OK)
+        s_cfg.speed_lps = (float)u32 / 100.0f;
+    if (nvs_get_u8(h, "sp_peak", &u8) == ESP_OK)
+        s_cfg.peak = (u8 != 0);
 
     nvs_close(h);
 
@@ -192,10 +174,8 @@ static esp_err_t app_settings_save_locked(void)
     int32_t sp_off_x10 = (int32_t)lrintf(clampf(s_cfg.level_offset_db, -80.0f, 80.0f) * 10.0f);
     int32_t sp_floor_x10 = (int32_t)lrintf(s_cfg.wf_floor_db * 10.0f);
     int32_t sp_ceil_x10 = (int32_t)lrintf(s_cfg.wf_ceil_db * 10.0f);
-    uint32_t sp_gamma_x100 = (uint32_t)lrintf(clampf(s_cfg.wf_gamma, 0.5f, 2.5f) * 100.0f);
-    uint32_t sp_alpha_x1000 = (uint32_t)lrintf(clampf(s_cfg.spec_alpha, 0.01f, 1.0f) * 1000.0f);
-    uint32_t sp_cond_x100 = (uint32_t)lrintf(clampf(s_cfg.wf_condense, 1.0f, 3.0f) * 100.0f);
-    uint32_t sp_beta_x1000 = (uint32_t)lrintf(clampf(s_cfg.wf_temporal_beta, 0.0f, 0.5f) * 1000.0f);
+    uint32_t sp_speed_x100 = (uint32_t)lrintf(clampf(s_cfg.speed_lps, SPECTRUM_SPEED_MIN,
+                                                     SPECTRUM_SPEED_MAX) * 100.0f);
 
     err = nvs_set_u32(h, "schema", SETTINGS_SCHEMA_VER);
     if (err == ESP_OK)
@@ -209,19 +189,26 @@ static esp_err_t app_settings_save_locked(void)
     if (err == ESP_OK)
         err = nvs_set_u32(h, "sp_cwbfo", (uint32_t)s_cfg.cw_pitch_hz);
     if (err == ESP_OK)
-        err = nvs_set_u32(h, "sp_gamma_x100", sp_gamma_x100);
-    if (err == ESP_OK)
         err = nvs_set_u8(h, "sp_palette", s_cfg.wf_palette);
     if (err == ESP_OK)
-        err = nvs_set_u32(h, "sp_alpha_x1000", sp_alpha_x1000);
+        err = nvs_set_u32(h, "sp_speed_x100", sp_speed_x100);
     if (err == ESP_OK)
-        err = nvs_set_u32(h, "sp_cond_x100", sp_cond_x100);
-    if (err == ESP_OK)
-        err = nvs_set_u32(h, "sp_beta_x1000", sp_beta_x1000);
-    if (err == ESP_OK)
-        err = nvs_set_u8(h, "sp_bilin", s_cfg.wf_bilinear ? 1 : 0);
+        err = nvs_set_u8(h, "sp_peak", s_cfg.peak ? 1 : 0);
     if (err == ESP_OK)
         err = nvs_commit(h);
+
+    /* Schema 1 keys that no longer have a runtime meaning. */
+    if (err == ESP_OK)
+    {
+        static const char *const legacy_keys[] = {
+            "sp_gamma_x100", "sp_alpha_x1000", "sp_cond_x100", "sp_beta_x1000", "sp_bilin",
+        };
+        for (size_t i = 0; i < sizeof(legacy_keys) / sizeof(legacy_keys[0]); i++)
+        {
+            (void)nvs_erase_key(h, legacy_keys[i]);
+        }
+        err = nvs_commit(h);
+    }
 
     nvs_close(h);
     return err;
@@ -308,12 +295,9 @@ void app_settings_apply_to_runtime(void)
     spectrum_set_view_mode(s_cfg.view_mode);
     spectrum_set_wf_range(s_cfg.wf_floor_db, s_cfg.wf_ceil_db);
     spectrum_set_cw_pitch_hz(s_cfg.cw_pitch_hz);
-    spectrum_set_wf_gamma(s_cfg.wf_gamma);
     spectrum_set_wf_palette(s_cfg.wf_palette);
-    spectrum_set_spec_alpha(s_cfg.spec_alpha);
-    spectrum_set_wf_condense(s_cfg.wf_condense);
-    spectrum_set_wf_temporal_beta(s_cfg.wf_temporal_beta);
-    spectrum_set_wf_bilinear(s_cfg.wf_bilinear);
+    spectrum_set_speed(s_cfg.speed_lps);
+    spectrum_set_peak(s_cfg.peak);
 }
 
 static esp_err_t app_settings_set_all(const app_settings_t *next)
@@ -365,10 +349,17 @@ esp_err_t app_settings_set_cw_pitch_hz(uint16_t hz)
     return app_settings_set_all(&next);
 }
 
-esp_err_t app_settings_set_wf_gamma(float gamma)
+esp_err_t app_settings_set_speed(float lines_per_sec)
 {
     app_settings_t next = s_cfg;
-    next.wf_gamma = gamma;
+    next.speed_lps = lines_per_sec;
+    return app_settings_set_all(&next);
+}
+
+esp_err_t app_settings_set_peak(bool enabled)
+{
+    app_settings_t next = s_cfg;
+    next.peak = enabled;
     return app_settings_set_all(&next);
 }
 
@@ -376,34 +367,6 @@ esp_err_t app_settings_set_wf_palette(uint8_t palette)
 {
     app_settings_t next = s_cfg;
     next.wf_palette = palette;
-    return app_settings_set_all(&next);
-}
-
-esp_err_t app_settings_set_spec_alpha(float alpha)
-{
-    app_settings_t next = s_cfg;
-    next.spec_alpha = alpha;
-    return app_settings_set_all(&next);
-}
-
-esp_err_t app_settings_set_wf_condense(float factor)
-{
-    app_settings_t next = s_cfg;
-    next.wf_condense = factor;
-    return app_settings_set_all(&next);
-}
-
-esp_err_t app_settings_set_wf_temporal_beta(float beta)
-{
-    app_settings_t next = s_cfg;
-    next.wf_temporal_beta = beta;
-    return app_settings_set_all(&next);
-}
-
-esp_err_t app_settings_set_wf_bilinear(bool enabled)
-{
-    app_settings_t next = s_cfg;
-    next.wf_bilinear = enabled;
     return app_settings_set_all(&next);
 }
 

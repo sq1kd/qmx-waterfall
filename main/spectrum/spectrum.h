@@ -1,10 +1,17 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#include "esp_err.h"
+
 #include "freertos/FreeRTOS.h"
 #include "lvgl.h"
 #include "usb/uac_host.h"
+
+/* Number of dB columns the spectrum is rendered into (display width). */
+#define SPECTRUM_IQ_COLUMNS 284
 
 /*
  * spectrum display configuration.
@@ -13,10 +20,10 @@
 typedef struct
 {
     /* FFT */
-    uint16_t fft_size; /* power of 2 (256/512/1024). default: 512     */
+    uint16_t fft_size; /* power of 2 (256/512/1024). default: 512 */
 
-    /* Speed */
-    float lines_per_sec; /* new rows per second.  default: 25.3         */
+    /* Initial waterfall speed; overwritten by the stored setting. */
+    float lines_per_sec;
 
     /* IF marker */
     uint32_t if_freq_hz; /* IF centre offset from DC, Hz.  default: 12000 */
@@ -32,8 +39,7 @@ void spectrum_default_cfg(spectrum_cfg_t *cfg);
  * are applied in spectrum_init() if this is not called.
  */
 void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution,
-                                 uint32_t sample_freq);
-
+                                uint32_t sample_freq);
 
 /* Update CAT-derived mode/filter for spectrum filter overlay rendering. */
 void spectrum_set_filter_params(uint8_t mode_code, uint32_t filter_hz);
@@ -51,57 +57,68 @@ void spectrum_request_history_reset(void);
 /* Set CW beat frequency used for CW/CWR center offset. */
 void spectrum_set_cw_pitch_hz(uint16_t hz);
 
-/* Read current runtime spectrum settings for CLI/status display. */
-void spectrum_get_runtime(float *level_offset_db,
-                          uint8_t *view_mode,
-                          float *wf_floor_db,
-                          float *wf_ceil_db,
-                          uint16_t *cw_pitch_hz,
-                          float *wf_gamma,
-                          uint8_t *wf_palette,
-                          float *spec_alpha,
-                          float *wf_condense,
-                          float *wf_temporal_beta,
-                          bool *wf_bilinear);
-
-/* Apply display level offset before mapping to colors. */
+/* Display settings. */
 void spectrum_set_level_offset_db(float offset_db);
-
-/* View mode: 0=full spectrum (neg+pos), 1=positive-only (0..+Fs/2). */
 void spectrum_set_view_mode(uint8_t mode);
-
-/* Set waterfall dB floor and ceiling for colour mapping. */
 void spectrum_set_wf_range(float floor_db, float ceil_db);
-
-/* Waterfall rendering tuning: gamma and palette (0..5). */
-void spectrum_set_wf_gamma(float gamma);
 void spectrum_set_wf_palette(uint8_t palette);
-void spectrum_set_wf_condense(float factor);
-void spectrum_set_wf_temporal_beta(float beta);
-void spectrum_set_wf_bilinear(bool enabled);
+void spectrum_set_speed(float lines_per_sec); /* 1..25 waterfall lines/s */
+void spectrum_set_peak(bool enabled);
 
-/* Spectrum trace EMA alpha (Python avg_alpha style), range (0,1]. */
-void spectrum_set_spec_alpha(float alpha);
+/* FFT implementation selection (SPECTRUM_FFT_ANSI / SPECTRUM_FFT_AES3). */
+uint8_t spectrum_get_fft_impl(void);
+esp_err_t spectrum_set_fft_impl(uint8_t impl);
 
-/*
- * Initialise spectrum and create the DSP task on core 1.
- * canvas  — full-screen lv_obj_t created by display_show_spectrum().
- * cfg     — settings (use spectrum_default_cfg() then override as needed).
- * Returns ESP_OK on success.
- */
+/* Compare the ANSI and AES3 FFTs on one deterministic block: gain, offset,
+ * per-bin error and timing. Logs the result. */
+esp_err_t spectrum_fft_selftest(void);
+
+/* Diagnostics. Counters are updated from the pipeline, so they are available
+ * only while it runs. */
+typedef struct
+{
+    uint32_t fft_frames;
+    uint32_t lines;
+    uint32_t draws;
+    uint32_t draws_skipped;
+    uint32_t read_calls;
+    uint64_t bytes_read;
+    uint64_t audio_us; /* audio time contained in bytes_read */
+    uint64_t run_us;   /* wall time since the first read */
+    uint32_t sample_freq;
+    uint32_t frame_bytes;
+    uint32_t draw_us_last;
+    uint32_t draw_us_avg;
+    uint32_t draw_us_max;
+    uint32_t lock_wait_us_max;
+    uint32_t stack_free_words;
+    uint32_t heap_internal_free;
+    uint32_t heap_psram_free;
+} spectrum_stats_t;
+
+void spectrum_get_stats(spectrum_stats_t *out);
+void spectrum_reset_stats(void);
+
+/* Capture one raw I/Q block (512 frames) plus the dB vector the firmware
+ * derives from it, so a PC reference FFT can be compared against it. */
+bool spectrum_capture_iq_block(void);
+
+typedef struct
+{
+    uint32_t frames;
+    uint32_t frame_bytes;
+    uint16_t fft_size;
+    uint8_t view_mode;
+} spectrum_iq_block_info_t;
+
+/* Returns the number of frames copied, or 0 when the capture is not ready. */
+uint32_t spectrum_get_iq_block(spectrum_iq_block_info_t *info,
+                               uint8_t *raw,
+                               uint32_t raw_cap,
+                               int16_t *db_q8,
+                               uint32_t db_cap);
+
 esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg);
-
-/*
- * Called from the UAC RX_DONE device callback (core 0) to wake the spectrum
- * task. Called from task context.
- */
 void spectrum_notify_rx(uac_host_device_handle_t handle);
-
-/*
- * Tear down the spectrum task and free all resources.
- * Call before uac_host_device_stop().
- */
 void spectrum_stop(void);
-
-/* Runtime state helper for lifecycle assertions/debug. */
 bool spectrum_is_running(void);

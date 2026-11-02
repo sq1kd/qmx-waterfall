@@ -2,3 +2,10 @@
 # Espressif IoT Development Framework (ESP-IDF) Project Minimal Configuration
 #
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# Waterfall/spectrum CPU cost matters more than image size here.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# The UAC IN path buffers 9 ms with the defaults (3 URBs x 3 packets); the
+# display push must never cost a 1 ms isochronous packet.
+CONFIG_UAC_NUM_ISOC_URBS=5
