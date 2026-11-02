@@ -459,6 +459,54 @@ void spectrum_get_stats(spectrum_stats_t *out)
     out->sample_freq = s.sample_freq;
     out->frame_bytes = (uint32_t)s.bytes_per_sample * s.channels;
     out->line_group = s.line_group;
+    {
+        uint32_t n = SPECTRUM_LEVEL_HIST;
+        float mean = 0.0f;
+        for (uint32_t i = 0; i < n; i++)
+            mean += s.level_hist[i];
+        mean /= (float)n;
+
+        float var = 0.0f;
+        float lo = 1e9f, hi = -1e9f;
+        for (uint32_t i = 0; i < n; i++)
+        {
+            float d = s.level_hist[i] - mean;
+            var += d * d;
+            if (s.level_hist[i] < lo)
+                lo = s.level_hist[i];
+            if (s.level_hist[i] > hi)
+                hi = s.level_hist[i];
+        }
+        out->level_min_db = lo;
+        out->level_max_db = hi;
+        out->level_std_db = sqrtf(var / (float)n);
+
+        /* Oldest to newest, then a small DFT over candidate ripple periods. */
+        float best_amp = 0.0f, best_period = 0.0f, amp4 = 0.0f;
+        for (uint32_t p = 2; p <= 32; p++)
+        {
+            float re = 0.0f, im = 0.0f;
+            for (uint32_t i = 0; i < n; i++)
+            {
+                uint32_t idx = (s.level_hist_idx + n - i) % n;
+                float v = s.level_hist[idx] - mean;
+                float ph = 6.283185307f * (float)i / (float)p;
+                re += v * cosf(ph);
+                im -= v * sinf(ph);
+            }
+            float amp = 2.0f * sqrtf(re * re + im * im) / (float)n;
+            if (amp > best_amp)
+            {
+                best_amp = amp;
+                best_period = (float)p;
+            }
+            if (p == 4)
+                amp4 = amp;
+        }
+        out->level_period_rows = best_period;
+        out->level_period_db = best_amp;
+        out->level_period4_db = amp4;
+    }
     out->draw_us_last = s.st_draw_us_last;
     out->draw_us_avg = s.st_draw_us_avg;
     out->draw_us_max = s.st_draw_us_max;
@@ -482,6 +530,9 @@ void spectrum_reset_stats(void)
     s.st_draw_us_avg = 0;
     s.st_draw_us_max = 0;
     s.st_lock_wait_us_max = 0;
+    s.level_hist_idx = 0;
+    for (int i = 0; i < SPECTRUM_LEVEL_HIST; i++)
+        s.level_hist[i] = 0.0f;
 }
 
 bool spectrum_capture_iq_block(void)

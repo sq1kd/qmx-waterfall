@@ -108,6 +108,14 @@ typedef struct
     uint32_t draw_us_max;
     uint32_t lock_wait_us_max;
     uint32_t stack_free_words;
+    /* Input level over the last SPECTRUM_LEVEL_HIST lines: if this ripples,
+     * the banding is in the received signal, not in the renderer. */
+    float level_min_db;
+    float level_max_db;
+    float level_std_db;
+    float level_period_rows; /* strongest ripple period, 0 when none */
+    float level_period_db;   /* ripple amplitude at that period */
+    float level_period4_db;  /* amplitude at a 4-line period (the old bug) */
     uint32_t heap_internal_free;
     uint32_t heap_psram_free;
 } spectrum_stats_t;

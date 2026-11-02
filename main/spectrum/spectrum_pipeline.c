@@ -16,7 +16,7 @@ static const char *TAG = "spectrum";
 
 #define SPEC_BG spectrum_rgb565(0x00, 0x00, 0x08)
 #define SPEC_FG spectrum_rgb565(0x00, 0xFF, 0x00)
-#define SPEC_PEAK spectrum_rgb565(0xFF, 0xFF, 0xFF)
+#define SPEC_PEAK spectrum_rgb565(0xFF, 0x38, 0x30)
 #define SPEC_FILTER_FILL spectrum_rgb565(0x52, 0x52, 0x52)
 #define SPEC_FILTER_EDGE spectrum_rgb565(0x9A, 0x9A, 0x9A)
 #define SPEC_AXIS spectrum_rgb565(0xB0, 0xB0, 0xB0)
@@ -86,8 +86,10 @@ static void emit_line(void)
         return;
 
     const float inv = 1.0f / (float)s.line_acc_n;
+    float power_sum = 0.0f;
     for (int px = 0; px < DISP_W; px++)
     {
+        power_sum += s.line_acc[px] * inv;
         float db = 10.0f * log10f(s.line_acc[px] * inv + 1e-12f);
         s.line_acc[px] = 0.0f;
         s.line_db[px] = db;
@@ -99,6 +101,8 @@ static void emit_line(void)
         }
     }
     s.line_acc_n = 0;
+    s.level_hist[s.level_hist_idx] = 10.0f * log10f(power_sum / (float)DISP_W + 1e-12f);
+    s.level_hist_idx = (s.level_hist_idx + 1u) % SPECTRUM_LEVEL_HIST;
     spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_STORE_H, DISP_W, s.line_db);
     s.st_lines++;
 }

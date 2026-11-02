@@ -23,6 +23,9 @@
 /* Read buffer: enough for ~20 ms of 24-bit stereo @ 48 kHz */
 #define READ_BUF_BYTES 6144
 
+/* Per-line mean level history, for the banding/input-level diagnostic. */
+#define SPECTRUM_LEVEL_HIST 64
+
 /* Peak hold decay, dB per second. */
 #define SPECTRUM_PEAK_DECAY_DB_PER_S 12.0f
 
@@ -103,6 +106,8 @@ typedef struct
     uint32_t st_draw_us_avg;
     uint32_t st_draw_us_max;
     uint32_t st_lock_wait_us_max;
+    float level_hist[SPECTRUM_LEVEL_HIST];
+    uint32_t level_hist_idx;
 
     /* Raw I/Q capture for the PC reference check */
     volatile uint8_t iq_capture_state; /* 0 idle, 1 armed, 2 ready */

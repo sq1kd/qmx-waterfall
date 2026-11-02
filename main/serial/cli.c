@@ -174,6 +174,9 @@ static void cli_sp_stats(const char *line)
     ESP_LOGI(TAG, "[sp] draw: last=%luus avg=%luus max=%luus, lock wait max=%luus",
              (unsigned long)st.draw_us_last, (unsigned long)st.draw_us_avg,
              (unsigned long)st.draw_us_max, (unsigned long)st.lock_wait_us_max);
+    ESP_LOGI(TAG, "[sp] level: min=%.1f max=%.1f std=%.2f dB, ripple %.2f dB @%.0f lines (4-line %.2f dB)",
+             st.level_min_db, st.level_max_db, st.level_std_db,
+             st.level_period_db, st.level_period_rows, st.level_period4_db);
     ESP_LOGI(TAG, "[sp] health: internal=%luB psram=%luB stack_free=%luB",
              (unsigned long)st.heap_internal_free, (unsigned long)st.heap_psram_free,
              (unsigned long)st.stack_free_words);
