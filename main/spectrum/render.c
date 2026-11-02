@@ -126,7 +126,12 @@ void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                 pnorm = 1.0f;
             int py = span_y - (int)(pnorm * (float)span_y);
             if (py < y)
+            {
+                /* Two rows: one pixel is too easy to miss on a 25 px strip. */
                 canvas_buf[py * disp_w + px] = peak_fg;
+                if (py > 0)
+                    canvas_buf[(py - 1) * disp_w + px] = peak_fg;
+            }
         }
     }
 }

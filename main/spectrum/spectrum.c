@@ -37,9 +37,6 @@ static uint32_t s_init_failures;
  * bias -0.000016 dB, max bin error 0.008 dB, AES3 ~1.6x faster. */
 static uint8_t s_fft_impl = SPECTRUM_FFT_AES3_AVAILABLE ? SPECTRUM_FFT_AES3 : SPECTRUM_FFT_ANSI;
 
-#define SPECTRUM_SPEED_MIN 1.0f
-#define SPECTRUM_SPEED_MAX 50.0f
-
 static bool spectrum_lock(TickType_t timeout)
 {
     if (s_lifecycle_mutex == NULL)
@@ -64,63 +61,94 @@ static float spectrum_fft_rate(void)
     return (float)s.sample_freq / (float)s.cfg.fft_size;
 }
 
-/* One line always averages a whole number of FFTs; pick the group that lands
- * closest to the requested rate. */
-float spectrum_snap_speed(float lines_per_sec)
-{
-    if (lines_per_sec < SPECTRUM_SPEED_MIN)
-        lines_per_sec = SPECTRUM_SPEED_MIN;
-    if (lines_per_sec > SPECTRUM_SPEED_MAX)
-        lines_per_sec = SPECTRUM_SPEED_MAX;
+static void spectrum_apply_line_timing(void);
 
+/* Waterfall lines average a whole number of FFTs, so the rates are
+ * fft_rate / group: level 1 = slowest (~15 lines/s), N = fastest (fft_rate/2). */
+static uint32_t spectrum_group_slowest(void)
+{
     float rate = spectrum_fft_rate();
     if (rate <= 0.0f)
-        return lines_per_sec;
-
-    float group = lroundf(rate / lines_per_sec);
-    if (group < 2.0f)
-        group = 2.0f; /* keeps the canvas push below ~50/s at 512/48k */
-    return rate / group;
+        return 6; /* nominal 512-point FFT at 48 kHz */
+    uint32_t g = (uint32_t)floorf(rate / SPECTRUM_SPEED_MIN_LPS);
+    if (g < 2)
+        g = 2;
+    if (g > 200)
+        g = 200;
+    return g;
 }
 
-float spectrum_speed_step(float lines_per_sec, int dir)
+uint8_t spectrum_speed_level_count(void)
+{
+    return (uint8_t)(spectrum_group_slowest() - 1); /* groups 2..slowest */
+}
+
+float spectrum_speed_lps_from_level(uint8_t level)
 {
     float rate = spectrum_fft_rate();
     if (rate <= 0.0f)
-        return lines_per_sec;
+        rate = 48000.0f / 512.0f;
 
-    float group = lroundf(rate / (lines_per_sec > 0.0f ? lines_per_sec : 1.0f));
-    if (group < 2.0f)
-        group = 2.0f;
-    group += (dir > 0) ? -1.0f : 1.0f;
-    if (group < 2.0f)
-        group = 2.0f;
-    if (group > 500.0f)
-        group = 500.0f;
+    uint8_t count = spectrum_speed_level_count();
+    if (level < 1)
+        level = 1;
+    if (level > count)
+        level = count;
 
-    float speed = rate / group;
-    if (speed < SPECTRUM_SPEED_MIN)
-        speed = SPECTRUM_SPEED_MIN;
-    return speed;
+    uint32_t group = spectrum_group_slowest() - (uint32_t)(level - 1);
+    if (group < 2)
+        group = 2;
+    return rate / (float)group;
+}
+
+uint8_t spectrum_speed_level_from_lps(float lines_per_sec)
+{
+    float rate = spectrum_fft_rate();
+    if (rate <= 0.0f)
+        rate = 48000.0f / 512.0f;
+    if (lines_per_sec < SPECTRUM_SPEED_MIN_LPS)
+        lines_per_sec = SPECTRUM_SPEED_MIN_LPS;
+
+    uint32_t slowest = spectrum_group_slowest();
+    uint32_t group = (uint32_t)lroundf(rate / lines_per_sec);
+    if (group < 2)
+        group = 2;
+    if (group > slowest)
+        group = slowest;
+
+    return (uint8_t)(slowest - group + 1);
+}
+
+uint8_t spectrum_get_speed_level(void)
+{
+    return s.speed_level;
+}
+
+uint8_t spectrum_set_speed_level(uint8_t level)
+{
+    s.speed_level = level;
+    spectrum_apply_line_timing();
+    ESP_LOGI(TAG, "[sp] speed=%u/%u (%.1f lines/s, %lu fft/line, %.1f s history)",
+             s.speed_level, spectrum_speed_level_count(), s.speed_lps,
+             (unsigned long)s.line_group, (float)(DISP_H - SPEC_H) / s.speed_lps);
+    return s.speed_level;
 }
 
 /* Derive the line grouping, peak decay and trace smoothing from the current
  * speed and FFT rate. */
 static void spectrum_apply_line_timing(void)
 {
-    float rate = spectrum_fft_rate();
-    if (rate > 0.0f)
-    {
-        s.speed_lps = spectrum_snap_speed(s.speed_lps);
-        uint32_t group = (uint32_t)lroundf(rate / s.speed_lps);
-        if (group < 2)
-            group = 2;
-        s.line_group = group;
-    }
-    else
-    {
-        s.line_group = 1;
-    }
+    uint8_t count = spectrum_speed_level_count();
+    if (s.speed_level < 1)
+        s.speed_level = 1;
+    if (s.speed_level > count)
+        s.speed_level = count;
+
+    uint32_t group = spectrum_group_slowest() - (uint32_t)(s.speed_level - 1);
+    if (group < 2)
+        group = 2;
+    s.line_group = group;
+    s.speed_lps = spectrum_speed_lps_from_level(s.speed_level);
 
     float speed = s.speed_lps > 0.0f ? s.speed_lps : 1.0f;
     s.peak_decay_db = SPECTRUM_PEAK_DECAY_DB_PER_S / speed;
@@ -271,21 +299,6 @@ void spectrum_set_wf_palette(uint8_t palette)
         palette = 6;
     s.wf_palette = palette;
     ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
-}
-
-float spectrum_set_speed(float lines_per_sec)
-{
-    if (lines_per_sec < SPECTRUM_SPEED_MIN)
-        lines_per_sec = SPECTRUM_SPEED_MIN;
-    if (lines_per_sec > SPECTRUM_SPEED_MAX)
-        lines_per_sec = SPECTRUM_SPEED_MAX;
-
-    s.speed_lps = lines_per_sec;
-    spectrum_apply_line_timing();
-    ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%lu fft/line, %.1f s history)",
-             s.speed_lps, (unsigned long)s.line_group,
-             (float)(DISP_H - SPEC_H) / s.speed_lps);
-    return s.speed_lps;
 }
 
 void spectrum_set_spec_mode(uint8_t mode)
@@ -557,11 +570,8 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     s.cw_pitch_hz = 700;
     s.spec_mode = SPECTRUM_MODE_TRACE_PEAK;
     s.fft_impl = s_fft_impl;
-    s.speed_lps = cfg->lines_per_sec;
-    if (s.speed_lps < SPECTRUM_SPEED_MIN)
-        s.speed_lps = SPECTRUM_SPEED_MIN;
-    if (s.speed_lps > SPECTRUM_SPEED_MAX)
-        s.speed_lps = SPECTRUM_SPEED_MAX;
+    (void)cfg->lines_per_sec;
+    s.speed_level = spectrum_speed_level_count(); /* fastest */
     spectrum_apply_line_timing();
 
     for (int i = 0; i < DISP_W; i++)

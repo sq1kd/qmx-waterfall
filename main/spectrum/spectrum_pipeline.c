@@ -16,7 +16,7 @@ static const char *TAG = "spectrum";
 
 #define SPEC_BG spectrum_rgb565(0x00, 0x00, 0x08)
 #define SPEC_FG spectrum_rgb565(0x00, 0xFF, 0x00)
-#define SPEC_PEAK spectrum_rgb565(0xFF, 0xE0, 0x40)
+#define SPEC_PEAK spectrum_rgb565(0xFF, 0xFF, 0xFF)
 #define SPEC_FILTER_FILL spectrum_rgb565(0x52, 0x52, 0x52)
 #define SPEC_FILTER_EDGE spectrum_rgb565(0x9A, 0x9A, 0x9A)
 #define SPEC_AXIS spectrum_rgb565(0xB0, 0xB0, 0xB0)

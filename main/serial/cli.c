@@ -97,18 +97,22 @@ static void cli_sp_palette(const char *line)
 
 static void cli_sp_speed(const char *line)
 {
-    float lps = 0.0f;
-    if (sscanf(line, "sp speed %f", &lps) == 1)
+    int level = 0;
+    if (sscanf(line, "sp speed %d", &level) == 1)
     {
-        (void)app_settings_set_speed(lps);
+        (void)app_settings_set_speed_level((uint8_t)level);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] speed=%.1f lines/s (%.1f s of history)",
-                 cfg.speed_lps, (float)(76 - 25) / cfg.speed_lps);
+        ESP_LOGI(TAG, "[sp] speed=%u/%u (%.1f lines/s, %.1f s of history)",
+                 (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
+                 spectrum_speed_lps_from_level(cfg.speed_level),
+                 (float)(76 - 25) / spectrum_speed_lps_from_level(cfg.speed_level));
     }
     else
     {
-        ESP_LOGI(TAG, "[sp] usage: sp speed <1..50> (snapped to fft_rate/N)");
+        ESP_LOGI(TAG, "[sp] usage: sp speed <1..%u> (1 = slowest, %u = fastest)",
+                 (unsigned)spectrum_speed_level_count(),
+                 (unsigned)spectrum_speed_level_count());
     }
 }
 
@@ -321,13 +325,14 @@ static void cli_sp_status(const char *line)
     (void)line;
     app_settings_t cfg;
     app_settings_get(&cfg);
-    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%.1f mode=%s fft=%s",
+    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%u/%u mode=%s fft=%s",
              cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db,
-             (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette, cfg.speed_lps,
+             (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette,
+             (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
              s_spec_mode_name[cfg.spec_mode < 4 ? cfg.spec_mode : 0],
              spectrum_get_fft_impl() ? "aes3" : "ansi");
     ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | "
-                  "sp palette <0..6> | sp speed <1..50> | sp mode <trace|trace+peak|peak|off> | sp stats [reset] | "
+                  "sp palette <0..6> | sp speed <1..N> | sp mode <trace|trace+peak|peak|off> | sp stats [reset] | "
                   "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp log <tag> <level> | sp save | sp reset");
 }
 

@@ -13,7 +13,7 @@ typedef struct
     float wf_ceil_db;      /* palette ceiling                                */
     uint16_t cw_pitch_hz;  /* CW beat note used for the marker offset        */
     uint8_t wf_palette;    /* palette index                                  */
-    float speed_lps;       /* waterfall lines per second, 1.0 .. 50.0        */
+    uint8_t speed_level;   /* 1..N waterfall speed level (no unit in UI)     */
     uint8_t spec_mode;     /* 0 trace, 1 trace+peak, 2 peak only, 3 off      */
 } app_settings_t;
 
@@ -27,7 +27,7 @@ esp_err_t app_settings_set_view_mode(uint8_t mode);
 esp_err_t app_settings_set_wf_range(float floor_db, float ceil_db);
 esp_err_t app_settings_set_cw_pitch_hz(uint16_t hz);
 esp_err_t app_settings_set_wf_palette(uint8_t palette);
-esp_err_t app_settings_set_speed(float lines_per_sec);
+esp_err_t app_settings_set_speed_level(uint8_t level);
 esp_err_t app_settings_set_spec_mode(uint8_t mode);
 
 esp_err_t app_settings_flush_now(void);

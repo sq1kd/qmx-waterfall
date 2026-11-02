@@ -92,7 +92,7 @@ static int ui_setting_to_slider(const app_settings_t *cfg, ui_setting_id_t id)
     case UI_SET_WF_PALETTE:
         return (int)cfg->wf_palette;
     case UI_SET_WF_SPEED:
-        return (int)(cfg->speed_lps * 100.0f + 0.5f);
+        return (int)cfg->speed_level;
     case UI_SET_WF_MODE:
         return (int)cfg->spec_mode;
     default:
@@ -154,8 +154,8 @@ static void ui_setting_range(ui_setting_id_t id, int *min, int *max)
         *max = 6;
         break;
     case UI_SET_WF_SPEED:
-        *min = 100;
-        *max = 2500;
+        *min = 1;
+        *max = spectrum_speed_level_count();
         break;
     case UI_SET_WF_MODE:
         *min = 0;
@@ -217,7 +217,8 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
         }
         break;
     case UI_SET_WF_SPEED:
-        snprintf(buf, n, "%.1f l/s", cfg->speed_lps);
+        snprintf(buf, n, "%u/%u", (unsigned)cfg->speed_level,
+                 (unsigned)spectrum_speed_level_count());
         break;
     case UI_SET_WF_MODE:
         switch (cfg->spec_mode)
@@ -274,7 +275,8 @@ static void ui_apply_delta(ui_setting_id_t id, int dir)
         (void)app_settings_set_wf_palette((uint8_t)clamp_i((int)cfg.wf_palette + dir, 0, 6));
         break;
     case UI_SET_WF_SPEED:
-        (void)app_settings_set_speed(spectrum_speed_step(cfg.speed_lps, dir));
+        (void)app_settings_set_speed_level(
+            (uint8_t)clamp_i((int)cfg.speed_level + dir, 1, spectrum_speed_level_count()));
         break;
     case UI_SET_WF_MODE:
         (void)app_settings_set_spec_mode((uint8_t)clamp_i((int)cfg.spec_mode + dir, 0, 3));

@@ -28,7 +28,7 @@
 
 /* Time constant of the trace smoothing (display only; the waterfall keeps the
  * per-line average). */
-#define SPECTRUM_TRACE_TAU_S 0.25f
+#define SPECTRUM_TRACE_TAU_S 0.08f
 
 typedef struct
 {
@@ -85,6 +85,7 @@ typedef struct
     /* Line cadence: every line averages exactly line_group FFTs, so the
      * rendered noise variance (and colour) is identical line to line. */
     float speed_lps;
+    uint8_t speed_level;
     uint32_t line_group;
     uint32_t line_fft_count;
 

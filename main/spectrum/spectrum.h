@@ -68,16 +68,17 @@ void spectrum_set_level_offset_db(float offset_db);
 void spectrum_set_view_mode(uint8_t mode);
 void spectrum_set_wf_range(float floor_db, float ceil_db);
 void spectrum_set_wf_palette(uint8_t palette);
-/* Returns the effective rate: lines always average a whole number of
- * FFTs, so the request is snapped to fft_rate / N. */
-float spectrum_set_speed(float lines_per_sec); /* 1..50 waterfall lines/s */
 void spectrum_set_spec_mode(uint8_t mode);
 
-/* Waterfall lines always average a whole number of FFTs, so the achievable
- * rates are fft_rate / N. These snap a request to the nearest one and walk
- * the achievable set. */
-float spectrum_snap_speed(float lines_per_sec);
-float spectrum_speed_step(float lines_per_sec, int dir);
+/* Waterfall speed as a 1..N level (no unit in the UI). Every line averages a
+ * whole number of FFTs, so only discrete rates exist: level 1 is the slowest
+ * (~15 lines/s), N the fastest (fft_rate/2, i.e. ~47 lines/s at 512/48k). */
+#define SPECTRUM_SPEED_MIN_LPS 15.0f
+uint8_t spectrum_speed_level_count(void);
+uint8_t spectrum_get_speed_level(void);
+uint8_t spectrum_set_speed_level(uint8_t level);
+float spectrum_speed_lps_from_level(uint8_t level);
+uint8_t spectrum_speed_level_from_lps(float lines_per_sec);
 
 /* FFT implementation selection (SPECTRUM_FFT_ANSI / SPECTRUM_FFT_AES3). */
 uint8_t spectrum_get_fft_impl(void);
