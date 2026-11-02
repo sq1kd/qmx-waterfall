@@ -24,7 +24,7 @@
 #define READ_BUF_BYTES 6144
 
 /* Per-line mean level history, for the banding/input-level diagnostic. */
-#define SPECTRUM_LEVEL_HIST 64
+#define SPECTRUM_LEVEL_HIST SPECTRUM_LEVEL_HIST_MAX
 
 /* Peak hold decay, dB per second. */
 #define SPECTRUM_PEAK_DECAY_DB_PER_S 12.0f
@@ -107,7 +107,9 @@ typedef struct
     uint32_t st_draw_us_max;
     uint32_t st_lock_wait_us_max;
     float level_hist[SPECTRUM_LEVEL_HIST];
+    uint32_t level_time_ms[SPECTRUM_LEVEL_HIST];
     uint32_t level_hist_idx;
+    uint32_t level_hist_valid;
 
     /* Raw I/Q capture for the PC reference check */
     volatile uint8_t iq_capture_state; /* 0 idle, 1 armed, 2 ready */

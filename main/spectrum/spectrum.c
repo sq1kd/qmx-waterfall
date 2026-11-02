@@ -470,8 +470,9 @@ void spectrum_get_stats(spectrum_stats_t *out)
     out->sample_freq = s.sample_freq;
     out->frame_bytes = (uint32_t)s.bytes_per_sample * s.channels;
     out->line_group = s.line_group;
+    if (s.level_hist_valid >= 2)
     {
-        uint32_t n = SPECTRUM_LEVEL_HIST;
+        uint32_t n = s.level_hist_valid;
         float mean = 0.0f;
         for (uint32_t i = 0; i < n; i++)
             mean += s.level_hist[i];
@@ -492,14 +493,15 @@ void spectrum_get_stats(spectrum_stats_t *out)
         out->level_max_db = hi;
         out->level_std_db = sqrtf(var / (float)n);
 
-        /* Oldest to newest, then a small DFT over candidate ripple periods. */
+        /* Oldest to newest, then a small DFT over candidate ripple periods
+         * (in FFT frames: 1 frame = 10.7 ms). */
         float best_amp = 0.0f, best_period = 0.0f, amp4 = 0.0f;
-        for (uint32_t p = 2; p <= 32; p++)
+        for (uint32_t p = 2; p <= 64; p++)
         {
             float re = 0.0f, im = 0.0f;
             for (uint32_t i = 0; i < n; i++)
             {
-                uint32_t idx = (s.level_hist_idx + n - i) % n;
+                uint32_t idx = (s.level_hist_idx + SPECTRUM_LEVEL_HIST - i) % SPECTRUM_LEVEL_HIST;
                 float v = s.level_hist[idx] - mean;
                 float ph = 6.283185307f * (float)i / (float)p;
                 re += v * cosf(ph);
@@ -528,6 +530,20 @@ void spectrum_get_stats(spectrum_stats_t *out)
     out->heap_psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
 }
 
+uint32_t spectrum_get_level_history(float *db, uint32_t *time_ms, uint32_t max)
+{
+    uint32_t n = s.level_hist_valid;
+    if (!db || !time_ms || n == 0 || max < n)
+        return 0;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        uint32_t idx = (s.level_hist_idx + SPECTRUM_LEVEL_HIST - (n - i)) % SPECTRUM_LEVEL_HIST;
+        db[i] = s.level_hist[idx];
+        time_ms[i] = s.level_time_ms[idx];
+    }
+    return n;
+}
+
 void spectrum_reset_stats(void)
 {
     s.st_fft_frames = 0;
@@ -542,6 +558,7 @@ void spectrum_reset_stats(void)
     s.st_draw_us_max = 0;
     s.st_lock_wait_us_max = 0;
     s.level_hist_idx = 0;
+    s.level_hist_valid = 0;
     for (int i = 0; i < SPECTRUM_LEVEL_HIST; i++)
         s.level_hist[i] = 0.0f;
 }

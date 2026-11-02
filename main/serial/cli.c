@@ -175,9 +175,10 @@ static void cli_sp_stats(const char *line)
     ESP_LOGI(TAG, "[sp] draw: last=%luus avg=%luus max=%luus, lock wait max=%luus",
              (unsigned long)st.draw_us_last, (unsigned long)st.draw_us_avg,
              (unsigned long)st.draw_us_max, (unsigned long)st.lock_wait_us_max);
-    ESP_LOGI(TAG, "[sp] level: min=%.1f max=%.1f std=%.2f dB, ripple %.2f dB @%.0f lines (4-line %.2f dB)",
+    ESP_LOGI(TAG, "[sp] level: min=%.1f max=%.1f std=%.2f dB, ripple %.2f dB @%.0f fft-frames (%.1f ms)",
              st.level_min_db, st.level_max_db, st.level_std_db,
-             st.level_period_db, st.level_period_rows, st.level_period4_db);
+             st.level_period_db, st.level_period_rows,
+             st.level_period_rows / 93.75f * 1000.0f);
     ESP_LOGI(TAG, "[sp] health: internal=%luB (largest %luB) psram=%luB stack_free=%luB",
              (unsigned long)st.heap_internal_free,
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -350,6 +351,40 @@ static void cli_sp_shot(const char *line)
     heap_caps_free(buf);
 }
 
+/* Per-line mean level history: timestamp, level. Lets us look at the actual
+ * waveform instead of a single DFT peak. */
+static float s_hist_db[SPECTRUM_LEVEL_HIST_MAX];
+static uint32_t s_hist_ms[SPECTRUM_LEVEL_HIST_MAX];
+
+static void cli_sp_level(const char *line)
+{
+    (void)line;
+    uint32_t n = spectrum_get_level_history(s_hist_db, s_hist_ms, SPECTRUM_LEVEL_HIST_MAX);
+    if (n == 0)
+    {
+        ESP_LOGW(TAG, "[sp] level: history unavailable");
+        return;
+    }
+
+    char buf[192];
+    size_t len = 0;
+    buf[0] = '\0';
+    for (uint32_t i = 0; i < n; i++)
+    {
+        len += (size_t)snprintf(buf + len, sizeof(buf) - len, "%lu:%.2f ", (unsigned long)s_hist_ms[i],
+                                (double)s_hist_db[i]);
+        if (len >= sizeof(buf) - 24)
+        {
+            ESP_LOGI(TAG, "LEVEL %s", buf);
+            len = 0;
+            buf[0] = '\0';
+        }
+    }
+    if (len > 0)
+        ESP_LOGI(TAG, "LEVEL %s", buf);
+    ESP_LOGI(TAG, "LEVELEND");
+}
+
 static void cli_sp_log(const char *line)
 {
     char tag[32] = {0};
@@ -422,6 +457,7 @@ static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp fft ", .handler = cli_sp_fft},
     {.prefix = "sp iqdump", .handler = cli_sp_iqdump},
     {.prefix = "sp shot", .handler = cli_sp_shot},
+    {.prefix = "sp level", .handler = cli_sp_level},
     {.prefix = "sp log ", .handler = cli_sp_log},
 };
 

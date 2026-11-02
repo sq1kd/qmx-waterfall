@@ -101,8 +101,6 @@ static void emit_line(void)
         }
     }
     s.line_acc_n = 0;
-    s.level_hist[s.level_hist_idx] = 10.0f * log10f(power_sum / (float)DISP_W + 1e-12f);
-    s.level_hist_idx = (s.level_hist_idx + 1u) % SPECTRUM_LEVEL_HIST;
     spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_STORE_H, DISP_W, s.line_db);
     s.st_lines++;
 }
@@ -268,6 +266,18 @@ void spectrum_pipeline_task(void *arg)
                     {
                         render_mag = &mag[fft_size / 2];
                         render_bins = (int)(fft_size / 2);
+                    }
+
+                    {
+                        float sum = 0.0f;
+                        for (uint32_t k = 0; k < fft_size; k++)
+                            sum += mag[k];
+                        s.level_hist[s.level_hist_idx] =
+                            10.0f * log10f(sum / (float)fft_size + 1e-12f);
+                        s.level_time_ms[s.level_hist_idx] = (uint32_t)(esp_timer_get_time() / 1000);
+                        s.level_hist_idx = (s.level_hist_idx + 1u) % SPECTRUM_LEVEL_HIST;
+                        if (s.level_hist_valid < SPECTRUM_LEVEL_HIST)
+                            s.level_hist_valid++;
                     }
 
                     if (s.iq_capture_state == 1 && s.iq_frames == fft_size)

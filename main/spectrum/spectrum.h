@@ -14,6 +14,9 @@
 #define SPECTRUM_IQ_COLUMNS 284
 #define SPECTRUM_DISPLAY_HEIGHT 76
 
+/* Per-line level history kept for diagnostics. */
+#define SPECTRUM_LEVEL_HIST_MAX 1024
+
 /* What the strip above the waterfall shows. */
 #define SPECTRUM_MODE_TRACE 0      /* trace only                  */
 #define SPECTRUM_MODE_TRACE_PEAK 1 /* trace + peak hold           */
@@ -127,6 +130,11 @@ typedef struct
 } spectrum_stats_t;
 
 void spectrum_get_stats(spectrum_stats_t *out);
+
+/* Copy the per-FFT mean level history, oldest first. Returns the count;
+ * times are milliseconds since boot. Sampling is the FFT rate (~93.75/s),
+ * so short periodicities are not aliased by the waterfall line rate. */
+uint32_t spectrum_get_level_history(float *db, uint32_t *time_ms, uint32_t max);
 void spectrum_reset_stats(void);
 
 /* Capture one raw I/Q block (512 frames) plus the dB vector the firmware
