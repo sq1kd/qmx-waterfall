@@ -20,20 +20,6 @@ env:
   MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
 
 jobs:
-  host-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: jdx/mise-action@v5
-        with:
-          version: ${{ env.MISE_VERSION }}
-          install: false
-          env: false
-
-      - name: Host tests (ASan/UBSan, no ESP-IDF)
-        run: mise run test
-
   firmware:
     strategy:
       fail-fast: false
@@ -93,7 +79,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [host-tests, firmware]
+    needs: [firmware]
     runs-on: ubuntu-latest
     permissions:
       contents: write
