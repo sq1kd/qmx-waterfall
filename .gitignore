@@ -82,3 +82,6 @@ Desktop.ini
 
 # Original photos and videos (README uses the processed copies in docs/img/)
 docs/media/
+
+# Editor settings (machine-specific paths)
+.vscode/
