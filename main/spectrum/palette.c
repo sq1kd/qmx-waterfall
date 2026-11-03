@@ -1,5 +1,8 @@
 #include "spectrum/palette.h"
 
+#include <math.h>
+#include <string.h>
+
 #include "spectrum/render.h"
 
 #define PAL_COUNT 7
@@ -125,4 +128,34 @@ const uint16_t *spectrum_palette_get_lut(uint8_t palette)
     if (palette >= PAL_COUNT)
         palette = 0;
     return s_palette_lut[palette];
+}
+
+void spectrum_palette_gamma_lut(uint16_t dst[256], const uint16_t *base, float gamma)
+{
+    if (!dst || !base)
+        return;
+
+    if (!isfinite(gamma))
+        gamma = 1.0f;
+    if (gamma < SPECTRUM_GAMMA_MIN)
+        gamma = SPECTRUM_GAMMA_MIN;
+    if (gamma > SPECTRUM_GAMMA_MAX)
+        gamma = SPECTRUM_GAMMA_MAX;
+
+    if (gamma == 1.0f)
+    {
+        memcpy(dst, base, 256 * sizeof(*dst));
+        return;
+    }
+
+    for (int i = 0; i < 256; i++)
+    {
+        float x = (float)i / 255.0f;
+        int idx = (int)(powf(x, gamma) * 255.0f + 0.5f);
+        if (idx < 0)
+            idx = 0;
+        if (idx > 255)
+            idx = 255;
+        dst[i] = base[idx];
+    }
 }

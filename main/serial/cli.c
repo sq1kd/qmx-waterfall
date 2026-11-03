@@ -121,6 +121,20 @@ static void cli_sp_palette(const char *line)
              (unsigned)cfg.wf_palette);
 }
 
+static void cli_sp_gamma(const char *line)
+{
+    float gamma = 0.0f;
+    if (sscanf(line, "sp gamma %f", &gamma) != 1 || !cli_apply_field(APP_FIELD_GAMMA, gamma))
+    {
+        cli_usage("sp gamma");
+        return;
+    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] gamma=%.2f", cfg.wf_gamma);
+}
+
 static void cli_sp_speed(const char *line)
 {
     long level = 0;
@@ -495,9 +509,9 @@ static void cli_sp_status(const char *line)
     (void)line;
     app_settings_t cfg;
     app_settings_get(&cfg);
-    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f cwbfo=%u pal=%u speed=%u/%u mode=%s fft=%s",
+    ESP_LOGI(TAG, "[sp] now: off=%.1f view=%u range=%.1f..%.1f gamma=%.2f cwbfo=%u pal=%u speed=%u/%u mode=%s fft=%s",
              cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db,
-             (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette,
+             cfg.wf_gamma, (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette,
              (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
              s_spec_mode_name[cfg.spec_mode < SPEC_MODE_COUNT ? cfg.spec_mode : 0],
              spectrum_get_fft_impl() ? "aes3" : "ansi");
@@ -515,6 +529,7 @@ static const cmd_entry_t s_sp_cmds[] = {
     {.prefix = "sp range", .handler = cli_sp_range, .help = "sp range <floor> <ceil> dB", .field = CLI_NO_FIELD},
     {.prefix = "sp cwbfo", .handler = cli_sp_cwbfo, .help = "sp cwbfo <Hz>", .field = APP_FIELD_CW_PITCH},
     {.prefix = "sp palette", .handler = cli_sp_palette, .help = "sp palette <index>", .field = APP_FIELD_PALETTE},
+    {.prefix = "sp gamma", .handler = cli_sp_gamma, .help = "sp gamma <value>", .field = APP_FIELD_GAMMA},
     {.prefix = "sp speed", .handler = cli_sp_speed, .help = "sp speed <level>", .field = APP_FIELD_SPEED},
     {.prefix = "sp mode", .handler = cli_sp_mode, .help = "sp mode <trace|trace+peak|peak|off>", .field = CLI_NO_FIELD},
     {.prefix = "sp ffttest", .handler = cli_sp_fft_test, .help = "sp ffttest", .field = CLI_NO_FIELD},
@@ -536,10 +551,16 @@ static void cli_log_help(const cmd_entry_t *cmd)
 {
     if (cmd->field >= 0)
     {
-        float min = app_settings_field_clamp((app_field_id_t)cmd->field, -1.0e9f);
-        float max = app_settings_field_clamp((app_field_id_t)cmd->field, 1.0e9f);
-        ESP_LOGI(TAG, "%s usage: %s (%.0f..%.0f)",
-                 cli_usage_tag(cmd->prefix), cmd->help, min, max);
+        app_field_id_t id = (app_field_id_t)cmd->field;
+        const app_field_spec_t *spec = app_settings_field_spec(id);
+        float min = app_settings_field_clamp(id, -1.0e9f);
+        float max = app_settings_field_clamp(id, 1.0e9f);
+        if (spec && spec->step > 0.0f && spec->step < 1.0f)
+            ESP_LOGI(TAG, "%s usage: %s (%.2f..%.2f)",
+                     cli_usage_tag(cmd->prefix), cmd->help, min, max);
+        else
+            ESP_LOGI(TAG, "%s usage: %s (%.0f..%.0f)",
+                     cli_usage_tag(cmd->prefix), cmd->help, min, max);
         return;
     }
     ESP_LOGI(TAG, "%s usage: %s", cli_usage_tag(cmd->prefix), cmd->help);

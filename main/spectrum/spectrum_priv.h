@@ -87,6 +87,12 @@ typedef struct
     float wf_db_floor;
     float wf_db_ceil;
     uint8_t wf_palette;
+    float wf_gamma;
+
+    /* Palette composed with gamma; double-buffered so a rebuild never
+     * rewrites the table a frame is being drawn with. */
+    uint16_t wf_lut[2][256];
+    volatile uint8_t wf_lut_active;
 
     /* Line cadence: every line averages exactly line_group FFTs, so the
      * rendered noise variance (and colour) is identical line to line. */

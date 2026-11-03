@@ -15,6 +15,7 @@
 #include "display/display.h"
 #include "spectrum/dsp.h"
 #include "spectrum/freq_map.h"
+#include "spectrum/palette.h"
 #include "spectrum/render.h"
 #include "spectrum/spectrum_priv.h"
 
@@ -217,12 +218,31 @@ void spectrum_set_wf_range(float floor_db, float ceil_db)
     ESP_LOGI(TAG, "[sp] wf range: %.1f .. %.1f dB", floor_db, ceil_db);
 }
 
-void spectrum_set_wf_palette(uint8_t palette)
+static void spectrum_rebuild_wf_lut(uint8_t palette, float gamma)
+{
+    uint8_t next = (uint8_t)(s.wf_lut_active ^ 1u);
+    spectrum_palette_gamma_lut(s.wf_lut[next], spectrum_palette_get_lut(palette), gamma);
+    s.wf_lut_active = next;
+}
+
+void spectrum_set_wf_colors(uint8_t palette, float gamma)
 {
     if (palette > 6)
         palette = 6;
+    if (!isfinite(gamma))
+        gamma = 1.0f;
+    if (gamma < SPECTRUM_GAMMA_MIN)
+        gamma = SPECTRUM_GAMMA_MIN;
+    if (gamma > SPECTRUM_GAMMA_MAX)
+        gamma = SPECTRUM_GAMMA_MAX;
+
+    if (palette == s.wf_palette && gamma == s.wf_gamma)
+        return;
+
     s.wf_palette = palette;
-    ESP_LOGI(TAG, "[sp] palette=%u", (unsigned)palette);
+    s.wf_gamma = gamma;
+    spectrum_rebuild_wf_lut(palette, gamma);
+    ESP_LOGI(TAG, "[sp] palette=%u gamma=%.2f", (unsigned)palette, gamma);
 }
 
 void spectrum_set_spec_mode(uint8_t mode)
@@ -358,6 +378,9 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     s.wf_db_floor = -140.0f;
     s.wf_db_ceil = 10.0f;
     s.wf_palette = 4;
+    s.wf_gamma = 1.0f;
+    /* A frame can be pushed before the stored settings are applied. */
+    spectrum_rebuild_wf_lut(s.wf_palette, s.wf_gamma);
     s.view_mode = 0;
     s.cw_pitch_hz = 700;
     s.spec_mode = SPECTRUM_MODE_TRACE_PEAK;

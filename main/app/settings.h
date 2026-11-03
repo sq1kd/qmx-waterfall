@@ -12,6 +12,7 @@ typedef struct
     uint8_t view_mode;     /* 0 = full band, 1 = IF-centred view              */
     float wf_floor_db;     /* palette floor                                  */
     float wf_ceil_db;      /* palette ceiling                                */
+    float wf_gamma;        /* waterfall colour curve; 1.0 = linear           */
     uint16_t cw_pitch_hz;  /* CW beat note used for the marker offset        */
     uint8_t wf_palette;    /* palette index                                  */
     uint8_t speed_level;   /* 1..N waterfall speed level (no unit in UI)     */
@@ -29,6 +30,7 @@ typedef enum
     APP_FIELD_VIEW_MODE,
     APP_FIELD_WF_FLOOR,
     APP_FIELD_WF_CEIL,
+    APP_FIELD_GAMMA,
     APP_FIELD_SPEED,
     APP_FIELD_PALETTE,
     APP_FIELD_SPEC_MODE,

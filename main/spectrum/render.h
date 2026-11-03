@@ -23,7 +23,8 @@ void spectrum_draw_spectrum_strip_db(uint16_t *canvas_buf,
                                      uint16_t peak_fg);
 
 /* One pixel row per stored row: no resampling, no interpolation. Row 0 is the
- * most recent line, so the image scrolls down by exactly one row per line. */
+ * most recent line, so the image scrolls down by exactly one row per line.
+ * pal_lut is the final composed table, not a palette index. */
 void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int disp_w,
                              int wf_disp_h,
@@ -33,7 +34,7 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int wf_store_h,
                              float db_floor,
                              float db_ceil,
-                             uint8_t palette);
+                             const uint16_t *pal_lut);
 
 void spectrum_store_wf_row(int16_t *wf_db_q8,
                            uint32_t *wf_write_idx,

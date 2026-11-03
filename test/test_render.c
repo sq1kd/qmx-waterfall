@@ -54,7 +54,7 @@ static void render_single_line(uint16_t *out, int disp_w, const float *db,
     int16_t ring[8];
     uint32_t idx = 0;
     spectrum_store_wf_row(ring, &idx, 1, disp_w, db);
-    spectrum_draw_waterfall(out, disp_w, 1, 0, ring, idx, 1, floor_db, ceil_db, 0);
+    spectrum_draw_waterfall(out, disp_w, 1, 0, ring, idx, 1, floor_db, ceil_db, pal());
 }
 
 static void test_scroll_is_one_row(void)
@@ -81,7 +81,7 @@ static void test_scroll_is_one_row(void)
         }
 
         spectrum_store_wf_row(ring, &idx, H, W, db);
-        spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, floor_db, ceil_db, 0);
+        spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, floor_db, ceil_db, pal());
         render_single_line(newest, W, db, floor_db, ceil_db);
 
         if (line > 0)
@@ -118,20 +118,60 @@ static void test_level_mapping(void)
     /* At the floor: darkest palette entry. */
     db[0] = db[1] = -60.0f;
     spectrum_store_wf_row(ring, &idx, H, W, db);
-    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -60.0f, 0.0f, 0);
+    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -60.0f, 0.0f, pal());
     CHECK(frame[0] == pal()[0], "-60 dB at floor should be palette[0]");
 
     /* Middle of a -120..0 window: about halfway up the palette. */
-    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -120.0f, 0.0f, 0);
+    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -120.0f, 0.0f, pal());
     CHECK(colour_in_window(frame[0], 125, 129),
           "-60 dB mid-window should be around palette[127]");
 
     /* At or above the ceiling: brightest entry. */
     db[0] = 10.0f;
     spectrum_store_wf_row(ring, &idx, H, W, db);
-    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -120.0f, 0.0f, 0);
+    spectrum_draw_waterfall(frame, W, H, 0, ring, idx, H, -120.0f, 0.0f, pal());
     CHECK(frame[0] == pal()[255], "above ceiling should be palette[255]");
 
+}
+
+/* Gamma bends the palette index and keeps the endpoints. A synthetic base
+ * table makes the composed output readable directly as an index. */
+static void test_gamma_curve(void)
+{
+    uint16_t base[256], lut[256], clamped[256];
+
+    for (int i = 0; i < 256; i++)
+        base[i] = (uint16_t)i;
+
+    spectrum_palette_gamma_lut(lut, base, 1.0f);
+    for (int i = 0; i < 256; i++)
+        CHECK(lut[i] == (uint16_t)i, "gamma 1.0 must be identity at %d", i);
+
+    spectrum_palette_gamma_lut(lut, base, 2.0f);
+    CHECK(lut[0] == 0 && lut[255] == 255, "gamma must keep the endpoints");
+    for (int i = 1; i < 255; i++)
+    {
+        CHECK(lut[i] < (uint16_t)i, "gamma 2 must darken index %d", i);
+        CHECK(lut[i] >= lut[i - 1], "gamma 2 must stay monotonic at %d", i);
+    }
+    CHECK(lut[128] >= 63 && lut[128] <= 65, "gamma 2 midpoint landed at %u", lut[128]);
+
+    spectrum_palette_gamma_lut(lut, base, 0.5f);
+    for (int i = 1; i <= 200; i++)
+        CHECK(lut[i] > (uint16_t)i, "gamma 0.5 must brighten index %d", i);
+
+    spectrum_palette_gamma_lut(lut, base, 0.1f);
+    spectrum_palette_gamma_lut(clamped, base, SPECTRUM_GAMMA_MIN);
+    CHECK(memcmp(lut, clamped, sizeof(lut)) == 0, "gamma low clamp");
+
+    spectrum_palette_gamma_lut(lut, base, 9.0f);
+    spectrum_palette_gamma_lut(clamped, base, SPECTRUM_GAMMA_MAX);
+    CHECK(memcmp(lut, clamped, sizeof(lut)) == 0, "gamma high clamp");
+
+    const uint16_t *magma = spectrum_palette_get_lut(4);
+    spectrum_palette_gamma_lut(lut, magma, 2.0f);
+    CHECK(lut[0] == magma[0] && lut[255] == magma[255],
+          "gamma must keep a real palette's endpoints");
 }
 
 static void test_peak_marker(void)
@@ -175,7 +215,7 @@ static void test_modes_and_geometry(void)
 
     const int wf_h = H - SH_MIN;
     spectrum_draw_spectrum_strip_db(canvas, W, SH_MIN, NULL, NULL, -120.0f, 0.0f, bg, fg, pk);
-    spectrum_draw_waterfall(canvas, W, wf_h, SH_MIN, ring, idx, RING, -120.0f, 0.0f, 0);
+    spectrum_draw_waterfall(canvas, W, wf_h, SH_MIN, ring, idx, RING, -120.0f, 0.0f, pal());
 
     for (int r = 0; r < SH_MIN; r++)
         for (int x = 0; x < W; x++)
@@ -196,6 +236,7 @@ int main(void)
     test_scroll_is_one_row();
     test_modes_and_geometry();
     test_level_mapping();
+    test_gamma_curve();
     test_peak_marker();
 
     if (s_failures)

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* The UI is intentionally a flat key table: the firmware has one screen and
- * a nine-item menu, so gettext-style catalogs would cost more than they save.
+ * a short menu, so gettext-style catalogs would cost more than they save.
  * Every key MUST exist in every language: the build checks the row count and
  * test/test_i18n.c checks each entry. */
 typedef enum
@@ -52,6 +52,7 @@ typedef enum
     TXT_SET_LEVEL,
     TXT_SET_FLOOR,
     TXT_SET_CEIL,
+    TXT_SET_GAMMA,
     TXT_SET_SPAN,
     TXT_SET_SPEED,
     TXT_SET_PALETTE,

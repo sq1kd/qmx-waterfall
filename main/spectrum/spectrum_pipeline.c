@@ -114,6 +114,7 @@ static void push_frame(void)
     const int wf_h = DISP_H - spec_h;
     const float dfloor = s.wf_db_floor - s.level_offset_db;
     const float dceil = s.wf_db_ceil - s.level_offset_db;
+    const uint16_t *wf_lut = s.wf_lut[s.wf_lut_active];
 
     spectrum_draw_spectrum_strip_db(s.canvas_buf, DISP_W, spec_h,
                                     mode_has_trace(s.spec_mode) ? s.trace_db : NULL,
@@ -123,7 +124,7 @@ static void push_frame(void)
 
     spectrum_draw_waterfall(s.canvas_buf, DISP_W, wf_h, spec_h,
                             s.wf_db, s.wf_write_idx, WF_STORE_H,
-                            dfloor, dceil, s.wf_palette);
+                            dfloor, dceil, wf_lut);
 
     spectrum_draw_filter_overlay(s.canvas_buf, DISP_W, spec_h,
                                  s.view_mode, s.cfg.fft_size,

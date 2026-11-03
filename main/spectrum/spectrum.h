@@ -79,7 +79,11 @@ void spectrum_set_cw_pitch_hz(uint16_t hz);
 void spectrum_set_level_offset_db(float offset_db);
 void spectrum_set_view_mode(uint8_t mode);
 void spectrum_set_wf_range(float floor_db, float ceil_db);
-void spectrum_set_wf_palette(uint8_t palette);
+
+/* Palette and gamma feed one table, hence one setter and one rebuild.
+ * gamma is clamped to SPECTRUM_GAMMA_MIN..MAX. */
+void spectrum_set_wf_colors(uint8_t palette, float gamma);
+
 void spectrum_set_spec_mode(uint8_t mode);
 
 /* Waterfall speed as a 1..N level (no unit in the UI). Every line averages a

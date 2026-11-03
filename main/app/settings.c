@@ -10,6 +10,7 @@
 #include "freertos/semphr.h"
 #include "nvs.h"
 #include "display/display.h"
+#include "spectrum/palette.h"
 #include "spectrum/spectrum.h"
 #include "ui/i18n.h"
 
@@ -46,6 +47,8 @@ static const field_desc_t s_fields[APP_FIELD_COUNT] = {
                             offsetof(app_settings_t, wf_floor_db), FIELD_F32},
     [APP_FIELD_WF_CEIL] = {{-80.0f, 40.0f, 1.0f, 10.0f},
                            offsetof(app_settings_t, wf_ceil_db), FIELD_F32},
+    [APP_FIELD_GAMMA] = {{SPECTRUM_GAMMA_MIN, SPECTRUM_GAMMA_MAX, 0.05f, 1.0f},
+                         offsetof(app_settings_t, wf_gamma), FIELD_F32},
     /* Fastest at 512/48k; the runtime clamps this to the real level count. */
     [APP_FIELD_SPEED] = {{1.0f, -1.0f, 1.0f, 5.0f},
                          offsetof(app_settings_t, speed_level), FIELD_U8},
@@ -62,6 +65,7 @@ static const field_desc_t s_fields[APP_FIELD_COUNT] = {
 typedef enum
 {
     NVS_F32_X10 = 0,
+    NVS_F32_X100,
     NVS_U8,
     NVS_U32_U16,
 } nvs_field_type_t;
@@ -79,6 +83,7 @@ static const nvs_field_t s_nvs_fields[] = {
     {"sp_view", NVS_U8, offsetof(app_settings_t, view_mode)},
     {"sp_floor_x10", NVS_F32_X10, offsetof(app_settings_t, wf_floor_db)},
     {"sp_ceil_x10", NVS_F32_X10, offsetof(app_settings_t, wf_ceil_db)},
+    {"sp_gamma_x100", NVS_F32_X100, offsetof(app_settings_t, wf_gamma)},
     {"sp_cwbfo", NVS_U32_U16, offsetof(app_settings_t, cw_pitch_hz)},
     {"sp_palette", NVS_U8, offsetof(app_settings_t, wf_palette)},
     {"sp_speed_lvl", NVS_U8, offsetof(app_settings_t, speed_level)},
@@ -242,6 +247,14 @@ static esp_err_t app_settings_nvs_read(nvs_handle_t h, const nvs_field_t *field,
             *(float *)base = (float)value / 10.0f;
         return err;
     }
+    case NVS_F32_X100:
+    {
+        uint32_t value = 0;
+        esp_err_t err = nvs_get_u32(h, field->key, &value);
+        if (err == ESP_OK)
+            *(float *)base = (float)value / 100.0f;
+        return err;
+    }
     case NVS_U8:
     {
         uint8_t value = 0;
@@ -270,6 +283,8 @@ static esp_err_t app_settings_nvs_write(nvs_handle_t h, const nvs_field_t *field
     {
     case NVS_F32_X10:
         return nvs_set_i32(h, field->key, (int32_t)lrintf(*(const float *)base * 10.0f));
+    case NVS_F32_X100:
+        return nvs_set_u32(h, field->key, (uint32_t)lrintf(*(const float *)base * 100.0f));
     case NVS_U8:
         return nvs_set_u8(h, field->key, *(const uint8_t *)base);
     case NVS_U32_U16:
@@ -362,7 +377,7 @@ static esp_err_t app_settings_save(const app_settings_t *cfg)
     if (err == ESP_OK)
     {
         static const char *const legacy_keys[] = {
-            "sp_gamma_x100", "sp_alpha_x1000", "sp_cond_x100", "sp_beta_x1000", "sp_bilin",
+            "sp_alpha_x1000", "sp_cond_x100", "sp_beta_x1000", "sp_bilin",
             "sp_peak", "sp_speed_x100",
         };
         for (size_t i = 0; i < sizeof(legacy_keys) / sizeof(legacy_keys[0]); i++)
@@ -449,7 +464,7 @@ static void app_settings_apply_snapshot(const app_settings_t *cfg)
     spectrum_set_view_mode(cfg->view_mode);
     spectrum_set_wf_range(cfg->wf_floor_db, cfg->wf_ceil_db);
     spectrum_set_cw_pitch_hz(cfg->cw_pitch_hz);
-    spectrum_set_wf_palette(cfg->wf_palette);
+    spectrum_set_wf_colors(cfg->wf_palette, cfg->wf_gamma);
     uint8_t level = spectrum_set_speed_level(cfg->speed_level);
     if (level != cfg->speed_level && settings_lock())
     {

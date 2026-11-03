@@ -84,9 +84,19 @@ static const char *ui_palette_name(uint8_t palette)
     }
 }
 
+/* The bar is integer-only; scale sub-unit steps so gamma's 0.05 does not
+ * round to no visible movement. */
+static int ui_setting_slider_scale(app_field_id_t id)
+{
+    const app_field_spec_t *spec = app_settings_field_spec(id);
+    if (spec && spec->step > 0.0f && spec->step < 1.0f)
+        return (int)lrintf(1.0f / spec->step);
+    return 1;
+}
+
 static int ui_setting_to_slider(const app_settings_t *cfg, app_field_id_t id)
 {
-    return (int)lrintf(app_settings_field_get(cfg, id));
+    return (int)lrintf(app_settings_field_get(cfg, id) * (float)ui_setting_slider_scale(id));
 }
 
 static const char *ui_setting_name(app_field_id_t id)
@@ -101,6 +111,8 @@ static const char *ui_setting_name(app_field_id_t id)
         return ui_tr(TXT_SET_FLOOR);
     case APP_FIELD_WF_CEIL:
         return ui_tr(TXT_SET_CEIL);
+    case APP_FIELD_GAMMA:
+        return ui_tr(TXT_SET_GAMMA);
     case APP_FIELD_SPEED:
         return ui_tr(TXT_SET_SPEED);
     case APP_FIELD_PALETTE:
@@ -120,8 +132,9 @@ static void ui_setting_range(app_field_id_t id, int *min, int *max)
 {
     /* Clamping a value far outside the range yields the bound itself, so the
      * dynamic speed limit stays in one place (settings.c). */
-    *min = (int)lrintf(app_settings_field_clamp(id, -1.0e9f));
-    *max = (int)lrintf(app_settings_field_clamp(id, 1.0e9f));
+    const int scale = ui_setting_slider_scale(id);
+    *min = (int)lrintf(app_settings_field_clamp(id, -1.0e9f) * (float)scale);
+    *max = (int)lrintf(app_settings_field_clamp(id, 1.0e9f) * (float)scale);
 }
 
 static void ui_setting_format_value(const app_settings_t *cfg, app_field_id_t id, char *buf, size_t n)
@@ -140,6 +153,9 @@ static void ui_setting_format_value(const app_settings_t *cfg, app_field_id_t id
         break;
     case APP_FIELD_WF_CEIL:
         snprintf(buf, n, "%.0f dB", app_settings_field_get(cfg, id));
+        break;
+    case APP_FIELD_GAMMA:
+        snprintf(buf, n, "%.2f", app_settings_field_get(cfg, id));
         break;
     case APP_FIELD_SPEED:
         snprintf(buf, n, "%u/%u", (unsigned)cfg->speed_level,

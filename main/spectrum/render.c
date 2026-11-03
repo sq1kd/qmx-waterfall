@@ -5,7 +5,6 @@
 
 #include "spectrum/freq_map.h"
 #include "spectrum/layout.h"
-#include "spectrum/palette.h"
 
 uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -147,15 +146,13 @@ void spectrum_draw_waterfall(uint16_t *canvas_buf,
                              int wf_store_h,
                              float db_floor,
                              float db_ceil,
-                             uint8_t palette)
+                             const uint16_t *pal_lut)
 {
-    if (!canvas_buf || !wf_db_q8 || disp_w <= 0 || wf_store_h <= 0)
+    if (!canvas_buf || !wf_db_q8 || !pal_lut || disp_w <= 0 || wf_store_h <= 0)
         return;
 
     if (wf_disp_h > wf_store_h)
         wf_disp_h = wf_store_h;
-
-    const uint16_t *pal_lut = spectrum_palette_get_lut(palette);
 
     int32_t floor_q8 = spectrum_db_to_q8(db_floor);
     int32_t ceil_q8 = spectrum_db_to_q8(db_ceil);
