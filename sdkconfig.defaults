@@ -8,7 +8,7 @@
 #
 # `sdkconfig` itself is never committed: it is generated per board into
 # build/<id>/sdkconfig. Regenerate this file after a menuconfig change with
-# `idf.py save-defconfig` (see RUN.md).
+# `idf.py save-defconfig` (see README, Developer notes).
 
 # Waterfall/spectrum CPU cost matters more than image size here.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
@@ -35,6 +35,6 @@ CONFIG_USB_HOST_RESET_RECOVERY_MS=100
 # display push must never cost a 1 ms isochronous packet.
 CONFIG_UAC_NUM_ISOC_URBS=5
 
-# The CAT link owns its timeout/recovery policy (docs/CAT.md); retrying a
+# The CAT link owns its timeout/recovery policy (README, CAT link details); retrying a
 # failed CDC IN transfer inside the driver only delays it.
 CONFIG_USBH_CDC_IN_EP_RETRY_COUNT=0
