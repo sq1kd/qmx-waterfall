@@ -4,13 +4,8 @@
 #include "lvgl.h"
 
 /*
- * Display status strings — shown on a friendly two-line status view.
- * Call from any FreeRTOS task; functions are internally thread-safe.
+ * Logical display dimensions after 90° CW rotation.
  */
-#define DISP_MSG_CONNECT_USB "Waiting for device"
-#define DISP_MSG_DISCONNECTED "Device disconnected"
-
-/* Logical display dimensions after 90° CW rotation */
 #define DISP_LOGICAL_W 284
 #define DISP_LOGICAL_H 76
 
@@ -35,14 +30,15 @@ typedef enum
 } disp_stage_state_t;
 
 /*
- * Show the progress checklist (idempotent; resets rows only when it was
- * hidden). Safe from any task. Replaces the two-line status view.
+ * Show the progress view (brand header, status line and a single scrolling
+ * rail of stage chips) and put every stage back to pending. Idempotent while
+ * the same connection is in progress. Safe from any task.
  */
 void display_show_progress(void);
 
 /*
- * Update one stage; detail is right-aligned and may be NULL to keep the
- * current text. No-op when the checklist is not on screen.
+ * Update one stage; detail is technical text and may be NULL to keep the
+ * current value. No-op when the progress view is not on screen.
  */
 void display_stage(disp_stage_t stage, disp_stage_state_t state, const char *detail);
 
@@ -64,20 +60,20 @@ bool display_progress_active(void);
 void display_init(void);
 
 /*
- * Update the centered status label.
- * msg must remain valid for the duration of the call (it is copied internally).
+ * Show the disconnected view: the stage rail stays visible (dimmed) with the
+ * last known state, unless this boot has not connected yet. Safe from any
+ * task; safe to call repeatedly.
  */
-void display_set_status(const char *msg);
+void display_show_disconnected(void);
 
 /*
- * Update two-line status text.
- * title/detail must remain valid for the call duration (copied internally).
- * detail can be NULL or empty to hide the second line.
+ * Re-render every visible status string in the active language. Called by the
+ * settings layer when the language changes.
  */
-void display_set_status_lines(const char *title, const char *detail);
+void display_language_changed(void);
 
 /*
- * Switch to spectrum mode: hide the status label, create a full-screen
+ * Switch to spectrum mode: hide the status view, create a full-screen
  * canvas and return it.  The caller passes this to spectrum_init().
  * Returns NULL on failure.
  */
@@ -92,6 +88,3 @@ lv_obj_t *display_show_spectrum(void);
  * still attached, in which case the buffer must not be freed.
  */
 bool display_spectrum_detach(void);
-
-/* Switch back to centered status mode and hide spectrum canvas. */
-void display_show_status(const char *msg);

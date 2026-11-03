@@ -6,7 +6,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs.h"
+#include "display/display.h"
 #include "spectrum/spectrum.h"
+#include "ui/i18n.h"
 
 #define SETTINGS_NAMESPACE "app_settings"
 /* Schema 2: gamma, alpha, condense, temporal beta and bilinear are gone.
@@ -43,6 +45,7 @@ void app_settings_defaults(app_settings_t *cfg)
     cfg->wf_palette = 4;
     cfg->speed_level = 5; /* fastest at 512/48k; clamped to the real count */
     cfg->spec_mode = 1; /* trace + peak */
+    cfg->language = UI_LANG_EN;
 }
 
 static bool app_settings_validate_and_repair(app_settings_t *cfg)
@@ -89,6 +92,11 @@ static bool app_settings_validate_and_repair(app_settings_t *cfg)
     if (cfg->spec_mode > 3)
     {
         cfg->spec_mode = def.spec_mode;
+        repaired = true;
+    }
+    if (cfg->language >= UI_LANG_COUNT)
+    {
+        cfg->language = def.language;
         repaired = true;
     }
 
@@ -159,6 +167,8 @@ static esp_err_t app_settings_load(void)
     }
     if (nvs_get_u8(h, "sp_mode", &u8) == ESP_OK)
         s_cfg.spec_mode = u8;
+    if (nvs_get_u8(h, "ui_lang", &u8) == ESP_OK)
+        s_cfg.language = u8;
 
     nvs_close(h);
 
@@ -201,6 +211,8 @@ static esp_err_t app_settings_save_locked(void)
         err = nvs_set_u8(h, "sp_speed_lvl", s_cfg.speed_level);
     if (err == ESP_OK)
         err = nvs_set_u8(h, "sp_mode", s_cfg.spec_mode);
+    if (err == ESP_OK)
+        err = nvs_set_u8(h, "ui_lang", s_cfg.language);
     if (err == ESP_OK)
         err = nvs_commit(h);
 
@@ -281,6 +293,10 @@ esp_err_t app_settings_init(void)
     if (err != ESP_OK)
         return err;
 
+    /* display_init() reads the strings, so the language must be active
+     * before it runs. */
+    ui_i18n_set_lang(s_cfg.language);
+
     s_initialized = true;
     if (s_dirty)
         app_settings_mark_dirty();
@@ -296,6 +312,15 @@ void app_settings_get(app_settings_t *out)
 
 void app_settings_apply_to_runtime(void)
 {
+    /* Language changes must reach the status screen even before the
+     * spectrum exists (boot, connect and disconnect screens). Only touch the
+     * display here when the language actually changed: this function runs on
+     * every level/speed tick from the UI task. */
+    uint8_t old_lang = ui_i18n_get_lang();
+    ui_i18n_set_lang(s_cfg.language);
+    if (old_lang != s_cfg.language)
+        display_language_changed();
+
     if (!spectrum_is_running())
         return;
 
@@ -381,6 +406,13 @@ esp_err_t app_settings_set_wf_palette(uint8_t palette)
 {
     app_settings_t next = s_cfg;
     next.wf_palette = palette;
+    return app_settings_set_all(&next);
+}
+
+esp_err_t app_settings_set_language(uint8_t lang)
+{
+    app_settings_t next = s_cfg;
+    next.language = lang;
     return app_settings_set_all(&next);
 }
 

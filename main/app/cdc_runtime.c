@@ -8,6 +8,7 @@
 #include "display/display.h"
 #include "cat/service.h"
 #include "spectrum/spectrum.h"
+#include "ui/i18n.h"
 
 static const char *TAG = "usb_audio_cdc_info";
 
@@ -67,43 +68,47 @@ static void cat_status_callback(const cat_status_t *st, void *user_ctx)
     switch (st->state)
     {
     case CAT_ST_IQ_ACTIVE:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, ui_tr(TXT_DETAIL_SYNCED));
         if (st->fw_version[0])
         {
             display_stage(DISP_STAGE_RADIO, DISP_STAGE_DONE, st->fw_version);
         }
-        display_stage(DISP_STAGE_IQ, DISP_STAGE_DONE, "on");
+        display_stage(DISP_STAGE_IQ, DISP_STAGE_DONE, ui_tr(TXT_DETAIL_ON));
+        /* IQ is ready; the audio stream and FFT are the remaining work, so
+         * show Spectrum as the active stage instead of leaving it grey. */
+        display_stage(DISP_STAGE_SPECTRUM, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_STARTING));
         app_runtime_trigger_iq_start_async();
         break;
 
     case CAT_ST_IQ_ENABLING:
     case CAT_ST_IQ_VERIFY:
         display_stage(DISP_STAGE_IQ, DISP_STAGE_ACTIVE,
-                      st->iq_recovering ? "re-enabling" : "enabling");
+                      st->iq_recovering ? ui_tr(TXT_DETAIL_REENABLING)
+                                        : ui_tr(TXT_DETAIL_ENABLING));
         break;
 
     case CAT_ST_DEGRADED:
     case CAT_ST_FAULT:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_FAILED, "no replies");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_FAILED, ui_tr(TXT_DETAIL_NO_REPLIES));
         break;
 
     case CAT_ST_DISCONNECTED:
         break;
     case CAT_ST_PORT_OPEN:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "opening");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_OPENING));
         break;
     case CAT_ST_SYNC:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "syncing");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_SYNCING));
         break;
     case CAT_ST_PROBE:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
-        display_stage(DISP_STAGE_RADIO, DISP_STAGE_ACTIVE, "reading");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, ui_tr(TXT_DETAIL_SYNCED));
+        display_stage(DISP_STAGE_RADIO, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_READING));
         break;
     case CAT_ST_READY:
-        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, "synced");
+        display_stage(DISP_STAGE_CAT, DISP_STAGE_DONE, ui_tr(TXT_DETAIL_SYNCED));
         display_stage(DISP_STAGE_RADIO, DISP_STAGE_DONE,
                       st->fw_version[0] ? NULL : "?");
-        display_stage(DISP_STAGE_IQ, DISP_STAGE_ACTIVE, "enabling");
+        display_stage(DISP_STAGE_IQ, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_ENABLING));
         break;
     default:
         break;
@@ -190,7 +195,7 @@ static void handle_cdc_connected(const usbh_cdc_device_event_data_t *event_data)
     app_runtime_set_stream_state(false, false, false);
 
     display_show_progress();
-    display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, "opening");
+    display_stage(DISP_STAGE_CAT, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_OPENING));
 
     cat_service_config_t cat_cfg;
     cat_service_default_config(&cat_cfg);
@@ -239,7 +244,7 @@ static void handle_cdc_disconnected(void)
     spectrum_notify_rx(NULL);
     cat_service_stop();
     TickType_t t_cat = xTaskGetTickCount();
-    display_set_status_lines(DISP_MSG_DISCONNECTED, "Reconnect USB to continue");
+    display_show_disconnected();
     TickType_t t_ui = xTaskGetTickCount();
     recovery_record_cdc_timing((uint32_t)((t_mark - t0) * portTICK_PERIOD_MS),
                                (uint32_t)((t_cat - t_mark) * portTICK_PERIOD_MS),

@@ -168,8 +168,8 @@ static void spectrum_cleanup_state(spectrum_state_t *st)
     }
 
     /* LVGL renders the canvas through a pointer to canvas_buf: delete the
-     * widget first or it keeps reading freed memory until the next
-     * display_show_status() (garbage frames, or a hang in the render task). */
+     * widget first or it keeps reading freed memory after the pipeline stops
+     * (garbage frames, or a hang in the render task). */
     bool keep_canvas_buf = false;
     if (st->canvas_buf != NULL && !display_spectrum_detach())
     {

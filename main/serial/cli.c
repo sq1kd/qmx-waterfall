@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "app/settings.h"
 #include "spectrum/spectrum.h"
+#include "ui/i18n.h"
 
 #define CLI_UART_NUM UART_NUM_0
 #define CLI_BUF_SZ 128
@@ -43,7 +44,7 @@ static void cli_sp_view(const char *line)
         (void)app_settings_set_view_mode((uint8_t)mode);
         app_settings_t cfg;
         app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] view=%u (0=full 1=pos-only)", (unsigned)cfg.view_mode);
+        ESP_LOGI(TAG, "[sp] view=%u (0=full 1=if-centred)", (unsigned)cfg.view_mode);
     }
 }
 
@@ -115,6 +116,30 @@ static void cli_sp_speed(const char *line)
                  (unsigned)spectrum_speed_level_count(),
                  (unsigned)spectrum_speed_level_count());
     }
+}
+
+static void cli_ui_lang(const char *line)
+{
+    char arg[16] = {0};
+    if (sscanf(line, "ui lang %15s", arg) == 1)
+    {
+        uint8_t lang = 0;
+        if (!ui_lang_parse(arg, &lang))
+        {
+            ESP_LOGI(TAG, "[ui] usage: ui lang <en|pl>");
+            return;
+        }
+        esp_err_t err = app_settings_set_language(lang);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "[ui] language update failed: %s", esp_err_to_name(err));
+            return;
+        }
+    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[ui] lang=%s", ui_lang_code((ui_lang_t)cfg.language));
 }
 
 static const char *const s_spec_mode_name[] = {"trace", "trace+peak", "peak", "off"};
@@ -442,6 +467,7 @@ static void cli_sp_status(const char *line)
 }
 
 static const cmd_entry_t s_sp_cmds[] = {
+    {.prefix = "ui lang", .handler = cli_ui_lang},
     {.prefix = "sp stats reset", .handler = cli_sp_stats_reset},
     {.prefix = "sp stats", .handler = cli_sp_stats},
     {.prefix = "sp save", .handler = cli_sp_save},
@@ -486,7 +512,7 @@ static void monitor_cli_task(void *arg)
     char line[CLI_BUF_SZ];
     size_t line_len = 0;
 
-    ESP_LOGI(TAG, "UART CLI ready on UART0. Commands: sp ...");
+    ESP_LOGI(TAG, "UART CLI ready on UART0. Commands: sp ... | ui lang <en|pl>");
     while (true)
     {
         int n = uart_read_bytes(CLI_UART_NUM, rx, sizeof(rx), pdMS_TO_TICKS(50));

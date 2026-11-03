@@ -165,8 +165,7 @@ void app_runtime_shutdown_clients(void)
     app_runtime_close_cdc_port_if_open();
     app_runtime_cdc_uninstall_driver();
     TickType_t t5 = xTaskGetTickCount();
-    display_show_status(DISP_MSG_DISCONNECTED);
-    display_set_status_lines(DISP_MSG_DISCONNECTED, "Reconnect USB to continue");
+    display_show_disconnected();
     TickType_t t6 = xTaskGetTickCount();
 
     ESP_LOGI(TAG,

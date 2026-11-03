@@ -11,6 +11,7 @@
 #include "display/display.h"
 #include "spectrum/spectrum.h"
 #include "cat/service.h"
+#include "ui/i18n.h"
 #include "ui/spectrum_ui.h"
 
 static const char *TAG = "usb_audio_cdc_info";
@@ -257,7 +258,7 @@ static void start_iq_stream_and_spectrum(void)
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
     s_iq_stream_started = true;
     xSemaphoreGive(s_dev_mutex);
-    display_stage(DISP_STAGE_SPECTRUM, DISP_STAGE_ACTIVE, "streaming");
+    display_stage(DISP_STAGE_SPECTRUM, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_STREAMING));
 
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
     bool spectrum_started = s_spectrum_started;
@@ -371,8 +372,8 @@ static void uac_driver_callback(uint8_t addr, uint8_t iface_num,
     }
 
     display_show_progress();
-    display_stage(DISP_STAGE_USB, DISP_STAGE_DONE, "found");
-    display_stage(DISP_STAGE_AUDIO, DISP_STAGE_ACTIVE, "configuring");
+    display_stage(DISP_STAGE_USB, DISP_STAGE_DONE, ui_tr(TXT_DETAIL_FOUND));
+    display_stage(DISP_STAGE_AUDIO, DISP_STAGE_ACTIVE, ui_tr(TXT_DETAIL_CONFIGURING));
 
     const uac_host_device_config_t dev_config = {
         .addr = addr,
