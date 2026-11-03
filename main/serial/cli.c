@@ -1,5 +1,6 @@
 #include "serial/cli.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -22,100 +23,119 @@ typedef struct
 {
     const char *prefix;
     cmd_handler_t handler;
+    const char *help;
+    int field; /* app_field_id_t whose range is appended, -1 for none */
 } cmd_entry_t;
+
+#define CLI_NO_FIELD (-1)
+
+static void cli_usage(const char *prefix);
+static void cli_print_usage(void);
+
+/* A value outside the descriptor range (including NaN) is rejected rather
+ * than silently clamped, so `sp view 257` cannot become view 1. */
+static bool cli_field_in_range(app_field_id_t id, float value)
+{
+    return app_settings_field_clamp(id, value) == value;
+}
+
+static bool cli_apply_field(app_field_id_t id, float value)
+{
+    if (!cli_field_in_range(id, value))
+        return false;
+    return app_settings_field_set(id, value) == ESP_OK;
+}
 
 static void cli_sp_off(const char *line)
 {
-    float val = 0.0f;
-    if (sscanf(line, "sp off %f", &val) == 1)
+    float value = 0.0f;
+    if (sscanf(line, "sp off %f", &value) != 1 || !cli_apply_field(APP_FIELD_LEVEL_OFF, value))
     {
-        (void)app_settings_set_level_offset_db(val);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] level_offset_db=%.1f", cfg.level_offset_db);
+        cli_usage("sp off");
+        return;
     }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] level_offset_db=%.1f", cfg.level_offset_db);
 }
 
 static void cli_sp_view(const char *line)
 {
-    int mode = -1;
-    if (sscanf(line, "sp view %d", &mode) == 1)
+    long mode = 0;
+    if (sscanf(line, "sp view %ld", &mode) != 1 || !cli_apply_field(APP_FIELD_VIEW_MODE, (float)mode))
     {
-        (void)app_settings_set_view_mode((uint8_t)mode);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] view=%u (0=full 1=if-centred)", (unsigned)cfg.view_mode);
+        cli_usage("sp view");
+        return;
     }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] view=%u (0=full 1=if-centred)", (unsigned)cfg.view_mode);
 }
 
 static void cli_sp_range(const char *line)
 {
     float floor_db = 0.0f, ceil_db = 0.0f;
-    if (sscanf(line, "sp range %f %f", &floor_db, &ceil_db) == 2)
+    if (sscanf(line, "sp range %f %f", &floor_db, &ceil_db) != 2 ||
+        !cli_field_in_range(APP_FIELD_WF_FLOOR, floor_db) ||
+        !cli_field_in_range(APP_FIELD_WF_CEIL, ceil_db) ||
+        floor_db >= ceil_db)
     {
-        (void)app_settings_set_wf_range(floor_db, ceil_db);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] range=%.1f..%.1f dB", cfg.wf_floor_db, cfg.wf_ceil_db);
+        cli_usage("sp range");
+        return;
     }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp range <floor_dB> <ceil_dB>");
-    }
+
+    (void)app_settings_set_wf_range(floor_db, ceil_db);
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] range=%.1f..%.1f dB", cfg.wf_floor_db, cfg.wf_ceil_db);
 }
 
 static void cli_sp_cwbfo(const char *line)
 {
-    int hz = 0;
-    if (sscanf(line, "sp cwbfo %d", &hz) == 1)
+    long hz = 0;
+    if (sscanf(line, "sp cwbfo %ld", &hz) != 1 || !cli_apply_field(APP_FIELD_CW_PITCH, (float)hz))
     {
-        (void)app_settings_set_cw_pitch_hz((uint16_t)hz);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] cwbfo=%u Hz", (unsigned)cfg.cw_pitch_hz);
+        cli_usage("sp cwbfo");
+        return;
     }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp cwbfo <400..1000>");
-    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] cwbfo=%u Hz", (unsigned)cfg.cw_pitch_hz);
 }
 
 static void cli_sp_palette(const char *line)
 {
-    int pal = 0;
-    if (sscanf(line, "sp palette %d", &pal) == 1)
+    long pal = 0;
+    if (sscanf(line, "sp palette %ld", &pal) != 1 || !cli_apply_field(APP_FIELD_PALETTE, (float)pal))
     {
-        (void)app_settings_set_wf_palette((uint8_t)pal);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma 6=sdr_bluehot)",
-                 (unsigned)cfg.wf_palette);
+        cli_usage("sp palette");
+        return;
     }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp palette <0..6>");
-    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] palette=%u (0=turbo 1=gray 2=inferno 3=viridis 4=magma 5=plasma 6=sdr_bluehot)",
+             (unsigned)cfg.wf_palette);
 }
 
 static void cli_sp_speed(const char *line)
 {
-    int level = 0;
-    if (sscanf(line, "sp speed %d", &level) == 1)
+    long level = 0;
+    if (sscanf(line, "sp speed %ld", &level) != 1 || !cli_apply_field(APP_FIELD_SPEED, (float)level))
     {
-        (void)app_settings_set_speed_level((uint8_t)level);
-        app_settings_t cfg;
-        app_settings_get(&cfg);
-        ESP_LOGI(TAG, "[sp] speed=%u/%u (%.1f lines/s, %.1f s of history)",
-                 (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
-                 spectrum_speed_lps_from_level(cfg.speed_level),
-                 (float)(76 - 25) / spectrum_speed_lps_from_level(cfg.speed_level));
+        cli_usage("sp speed");
+        return;
     }
-    else
-    {
-        ESP_LOGI(TAG, "[sp] usage: sp speed <1..%u> (1 = slowest, %u = fastest)",
-                 (unsigned)spectrum_speed_level_count(),
-                 (unsigned)spectrum_speed_level_count());
-    }
+
+    app_settings_t cfg;
+    app_settings_get(&cfg);
+    ESP_LOGI(TAG, "[sp] speed=%u/%u (%.1f lines/s, %.1f s of history)",
+             (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
+             spectrum_speed_lps_from_level(cfg.speed_level),
+             spectrum_history_seconds());
 }
 
 static void cli_ui_lang(const char *line)
@@ -126,7 +146,7 @@ static void cli_ui_lang(const char *line)
         uint8_t lang = 0;
         if (!ui_lang_parse(arg, &lang))
         {
-            ESP_LOGI(TAG, "[ui] usage: ui lang <en|pl>");
+            cli_usage("ui lang");
             return;
         }
         esp_err_t err = app_settings_set_language(lang);
@@ -142,7 +162,12 @@ static void cli_ui_lang(const char *line)
     ESP_LOGI(TAG, "[ui] lang=%s", ui_lang_code((ui_lang_t)cfg.language));
 }
 
-static const char *const s_spec_mode_name[] = {"trace", "trace+peak", "peak", "off"};
+enum
+{
+    SPEC_MODE_COUNT = 4,
+};
+
+static const char *const s_spec_mode_name[SPEC_MODE_COUNT] = {"trace", "trace+peak", "peak", "off"};
 
 static void cli_sp_mode(const char *line)
 {
@@ -150,7 +175,7 @@ static void cli_sp_mode(const char *line)
     if (sscanf(line, "sp mode %15s", arg) == 1)
     {
         int mode = -1;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < SPEC_MODE_COUNT; i++)
         {
             if (strcmp(arg, s_spec_mode_name[i]) == 0)
                 mode = i;
@@ -158,15 +183,15 @@ static void cli_sp_mode(const char *line)
         if (mode < 0 && sscanf(arg, "%d", &mode) != 1)
             mode = -1;
 
-        if (mode >= 0 && mode <= 3)
+        if (mode >= 0 && mode < SPEC_MODE_COUNT)
         {
-            (void)app_settings_set_spec_mode((uint8_t)mode);
+            (void)app_settings_field_set(APP_FIELD_SPEC_MODE, (float)mode);
             app_settings_t cfg;
             app_settings_get(&cfg);
             ESP_LOGI(TAG, "[sp] mode=%s", s_spec_mode_name[cfg.spec_mode]);
             return;
         }
-        ESP_LOGI(TAG, "[sp] usage: sp mode <trace|trace+peak|peak|off>");
+        cli_usage("sp mode");
         return;
     }
 
@@ -188,6 +213,9 @@ static void cli_sp_stats(const char *line)
         deficits_x100 = (int)((deficit * 10000ULL) / expected);
     }
 
+    float fft_rate = spectrum_fft_rate();
+    float period_ms = fft_rate > 0.0f ? st.level_period_rows / fft_rate * 1000.0f : 0.0f;
+
     ESP_LOGI(TAG, "[sp] stats: fft=%lu lines=%lu (%lu fft/line) draws=%lu skipped=%lu",
              (unsigned long)st.fft_frames, (unsigned long)st.lines,
              (unsigned long)st.line_group, (unsigned long)st.draws,
@@ -203,7 +231,7 @@ static void cli_sp_stats(const char *line)
     ESP_LOGI(TAG, "[sp] level: min=%.1f max=%.1f std=%.2f dB, ripple %.2f dB @%.0f fft-frames (%.1f ms)",
              st.level_min_db, st.level_max_db, st.level_std_db,
              st.level_period_db, st.level_period_rows,
-             st.level_period_rows / 93.75f * 1000.0f);
+             period_ms);
     ESP_LOGI(TAG, "[sp] health: internal=%luB (largest %luB) psram=%luB stack_free=%luB",
              (unsigned long)st.heap_internal_free,
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -223,6 +251,11 @@ static void cli_sp_fft(const char *line)
     char impl[8] = {0};
     if (sscanf(line, "sp fft %7s", impl) == 1)
     {
+        if (strcmp(impl, "ansi") != 0 && strcmp(impl, "aes3") != 0)
+        {
+            cli_usage("sp fft");
+            return;
+        }
         uint8_t want = (strcmp(impl, "aes3") == 0) ? 1 : 0;
         esp_err_t err = spectrum_set_fft_impl(want);
         if (err != ESP_OK)
@@ -416,21 +449,28 @@ static void cli_sp_log(const char *line)
     char lvl[16] = {0};
     if (sscanf(line, "sp log %31s %15s", tag, lvl) != 2)
     {
-        ESP_LOGI(TAG, "[sp] usage: sp log <tag> <none|error|warn|info|debug|verbose>");
+        cli_usage("sp log");
         return;
     }
 
-    esp_log_level_t level = ESP_LOG_INFO;
+    esp_log_level_t level;
     if (strcmp(lvl, "none") == 0)
         level = ESP_LOG_NONE;
     else if (strcmp(lvl, "error") == 0)
         level = ESP_LOG_ERROR;
     else if (strcmp(lvl, "warn") == 0)
         level = ESP_LOG_WARN;
+    else if (strcmp(lvl, "info") == 0)
+        level = ESP_LOG_INFO;
     else if (strcmp(lvl, "debug") == 0)
         level = ESP_LOG_DEBUG;
     else if (strcmp(lvl, "verbose") == 0)
         level = ESP_LOG_VERBOSE;
+    else
+    {
+        cli_usage("sp log");
+        return;
+    }
 
     esp_log_level_set(tag, level);
     ESP_LOGI(TAG, "[sp] log %s=%s", tag, lvl);
@@ -459,49 +499,93 @@ static void cli_sp_status(const char *line)
              cfg.level_offset_db, (unsigned)cfg.view_mode, cfg.wf_floor_db, cfg.wf_ceil_db,
              (unsigned)cfg.cw_pitch_hz, (unsigned)cfg.wf_palette,
              (unsigned)cfg.speed_level, (unsigned)spectrum_speed_level_count(),
-             s_spec_mode_name[cfg.spec_mode < 4 ? cfg.spec_mode : 0],
+             s_spec_mode_name[cfg.spec_mode < SPEC_MODE_COUNT ? cfg.spec_mode : 0],
              spectrum_get_fft_impl() ? "aes3" : "ansi");
-    ESP_LOGI(TAG, "[sp] usage: sp off <dB> | sp view <0|1> | sp range <floor> <ceil> | sp cwbfo <400..1000> | "
-                  "sp palette <0..6> | sp speed <1..N> | sp mode <trace|trace+peak|peak|off> | sp stats [reset] | "
-                  "sp fft <ansi|aes3> | sp ffttest | sp iqdump | sp shot | sp log <tag> <level> | sp save | sp reset");
 }
 
 static const cmd_entry_t s_sp_cmds[] = {
-    {.prefix = "ui lang", .handler = cli_ui_lang},
-    {.prefix = "sp stats reset", .handler = cli_sp_stats_reset},
-    {.prefix = "sp stats", .handler = cli_sp_stats},
-    {.prefix = "sp save", .handler = cli_sp_save},
-    {.prefix = "sp reset", .handler = cli_sp_reset},
-    {.prefix = "sp off ", .handler = cli_sp_off},
-    {.prefix = "sp view ", .handler = cli_sp_view},
-    {.prefix = "sp range ", .handler = cli_sp_range},
-    {.prefix = "sp cwbfo ", .handler = cli_sp_cwbfo},
-    {.prefix = "sp palette ", .handler = cli_sp_palette},
-    {.prefix = "sp speed ", .handler = cli_sp_speed},
-    {.prefix = "sp mode", .handler = cli_sp_mode},
-    {.prefix = "sp ffttest", .handler = cli_sp_fft_test},
-    {.prefix = "sp fft ", .handler = cli_sp_fft},
-    {.prefix = "sp iqdump", .handler = cli_sp_iqdump},
-    {.prefix = "sp shot", .handler = cli_sp_shot},
-    {.prefix = "sp level", .handler = cli_sp_level},
-    {.prefix = "sp log ", .handler = cli_sp_log},
+    {.prefix = "ui lang", .handler = cli_ui_lang, .help = "ui lang <en|pl>", .field = CLI_NO_FIELD},
+    {.prefix = "sp status", .handler = cli_sp_status, .help = "sp status", .field = CLI_NO_FIELD},
+    {.prefix = "sp stats reset", .handler = cli_sp_stats_reset, .help = "sp stats reset", .field = CLI_NO_FIELD},
+    {.prefix = "sp stats", .handler = cli_sp_stats, .help = "sp stats", .field = CLI_NO_FIELD},
+    {.prefix = "sp save", .handler = cli_sp_save, .help = "sp save", .field = CLI_NO_FIELD},
+    {.prefix = "sp reset", .handler = cli_sp_reset, .help = "sp reset", .field = CLI_NO_FIELD},
+    {.prefix = "sp off", .handler = cli_sp_off, .help = "sp off <dB>", .field = APP_FIELD_LEVEL_OFF},
+    {.prefix = "sp view", .handler = cli_sp_view, .help = "sp view <mode>", .field = APP_FIELD_VIEW_MODE},
+    {.prefix = "sp range", .handler = cli_sp_range, .help = "sp range <floor> <ceil> dB", .field = CLI_NO_FIELD},
+    {.prefix = "sp cwbfo", .handler = cli_sp_cwbfo, .help = "sp cwbfo <Hz>", .field = APP_FIELD_CW_PITCH},
+    {.prefix = "sp palette", .handler = cli_sp_palette, .help = "sp palette <index>", .field = APP_FIELD_PALETTE},
+    {.prefix = "sp speed", .handler = cli_sp_speed, .help = "sp speed <level>", .field = APP_FIELD_SPEED},
+    {.prefix = "sp mode", .handler = cli_sp_mode, .help = "sp mode <trace|trace+peak|peak|off>", .field = CLI_NO_FIELD},
+    {.prefix = "sp ffttest", .handler = cli_sp_fft_test, .help = "sp ffttest", .field = CLI_NO_FIELD},
+    {.prefix = "sp fft", .handler = cli_sp_fft, .help = "sp fft <ansi|aes3>", .field = CLI_NO_FIELD},
+    {.prefix = "sp iqdump", .handler = cli_sp_iqdump, .help = "sp iqdump", .field = CLI_NO_FIELD},
+    {.prefix = "sp shot", .handler = cli_sp_shot, .help = "sp shot", .field = CLI_NO_FIELD},
+    {.prefix = "sp level", .handler = cli_sp_level, .help = "sp level", .field = CLI_NO_FIELD},
+    {.prefix = "sp log", .handler = cli_sp_log, .help = "sp log <tag> <none|error|warn|info|debug|verbose>", .field = CLI_NO_FIELD},
 };
+
+#define CLI_CMD_COUNT (sizeof(s_sp_cmds) / sizeof(s_sp_cmds[0]))
+
+static const char *cli_usage_tag(const char *prefix)
+{
+    return strncmp(prefix, "ui", 2) == 0 ? "[ui]" : "[sp]";
+}
+
+static void cli_log_help(const cmd_entry_t *cmd)
+{
+    if (cmd->field >= 0)
+    {
+        float min = app_settings_field_clamp((app_field_id_t)cmd->field, -1.0e9f);
+        float max = app_settings_field_clamp((app_field_id_t)cmd->field, 1.0e9f);
+        ESP_LOGI(TAG, "%s usage: %s (%.0f..%.0f)",
+                 cli_usage_tag(cmd->prefix), cmd->help, min, max);
+        return;
+    }
+    ESP_LOGI(TAG, "%s usage: %s", cli_usage_tag(cmd->prefix), cmd->help);
+}
+
+static void cli_usage(const char *prefix)
+{
+    for (size_t i = 0; i < CLI_CMD_COUNT; i++)
+    {
+        if (strcmp(s_sp_cmds[i].prefix, prefix) == 0)
+        {
+            cli_log_help(&s_sp_cmds[i]);
+            return;
+        }
+    }
+}
+
+static void cli_print_usage(void)
+{
+    for (size_t i = 0; i < CLI_CMD_COUNT; i++)
+        cli_log_help(&s_sp_cmds[i]);
+}
 
 static void handle_cli_line(const char *line)
 {
-    for (size_t i = 0; i < sizeof(s_sp_cmds) / sizeof(s_sp_cmds[0]); i++)
+    for (size_t i = 0; i < CLI_CMD_COUNT; i++)
     {
         size_t n = strlen(s_sp_cmds[i].prefix);
-        if (strncmp(line, s_sp_cmds[i].prefix, n) == 0)
+        if (strncmp(line, s_sp_cmds[i].prefix, n) == 0 && (line[n] == '\0' || line[n] == ' '))
         {
             s_sp_cmds[i].handler(line);
             return;
         }
     }
 
-    if (strncmp(line, "sp", 2) == 0)
+    if (strcmp(line, "sp") == 0)
     {
         cli_sp_status(line);
+        cli_print_usage();
+        return;
+    }
+
+    if (strncmp(line, "sp ", 3) == 0)
+    {
+        ESP_LOGW(TAG, "[sp] unknown command: %s", line);
+        cli_print_usage();
     }
 }
 
@@ -511,6 +595,7 @@ static void monitor_cli_task(void *arg)
     uint8_t rx[64];
     char line[CLI_BUF_SZ];
     size_t line_len = 0;
+    bool discard = false;
 
     ESP_LOGI(TAG, "UART CLI ready on UART0. Commands: sp ... | ui lang <en|pl>");
     while (true)
@@ -526,21 +611,25 @@ static void monitor_cli_task(void *arg)
             char c = (char)rx[i];
             if (c == '\r' || c == '\n')
             {
-                if (line_len > 0)
+                if (!discard && line_len > 0)
                 {
                     line[line_len] = '\0';
                     handle_cli_line(line);
-                    line_len = 0;
                 }
+                line_len = 0;
+                discard = false;
                 continue;
             }
+            if (discard)
+                continue;
             if (line_len + 1 < sizeof(line))
-            {
                 line[line_len++] = c;
-            }
             else
             {
+                /* Restarting mid-line would run a command assembled from the
+                 * tail; drop the rest of this line instead. */
                 line_len = 0;
+                discard = true;
             }
         }
     }
@@ -550,6 +639,15 @@ void serial_cli_start(void)
 {
     /* TX ring buffer: without it, large writes spin on the FIFO instead of
      * blocking (the `sp shot` dump is ~86 KB). */
-    uart_driver_install(CLI_UART_NUM, 1024, 4096, 0, NULL, 0);
-    xTaskCreate(monitor_cli_task, "mon_cli", 4096, NULL, 1, NULL);
+    esp_err_t err = uart_driver_install(CLI_UART_NUM, 1024, 4096, 0, NULL, 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "uart driver install failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    if (xTaskCreate(monitor_cli_task, "mon_cli", 4096, NULL, 1, NULL) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "failed to create CLI task");
+    }
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+/* Internal to the spectrum module; not part of the public API. */
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -9,38 +11,36 @@
 #include "usb/uac_host.h"
 
 #include "spectrum/spectrum.h"
-
-/* Logical display dimensions after rotation */
-#define DISP_W SPECTRUM_IQ_COLUMNS
-#define DISP_H 76
-
-/* Layout: spectrum line plot on top, waterfall below. With the spectrum off
- * the strip keeps room for the filter box and the frequency scale. */
-#define SPEC_H 25
-#define SPEC_H_MIN 13
-#define WF_STORE_H (DISP_H - SPEC_H_MIN) /* ring sized for the tallest waterfall */
+#include "spectrum/layout.h"
 
 /* Read buffer: enough for ~20 ms of 24-bit stereo @ 48 kHz */
 #define READ_BUF_BYTES 6144
 
-/* Per-line mean level history, for the banding/input-level diagnostic. */
-#define SPECTRUM_LEVEL_HIST SPECTRUM_LEVEL_HIST_MAX
+/* Raw I/Q capture keeps at most this many bytes per frame (24-bit stereo in
+ * 4-byte containers is the widest layout the USB descriptors produce). */
+enum
+{
+    IQ_RAW_FRAME_MAX_BYTES = 8
+};
+
+/* Guards the log of power bins: an empty bin has zero power. */
+static const float SPECTRUM_POWER_FLOOR = 1e-12f;
 
 /* Peak hold decay, dB per second. */
-#define SPECTRUM_PEAK_DECAY_DB_PER_S 12.0f
+static const float SPECTRUM_PEAK_DECAY_DB_PER_S = 12.0f;
 
 /* Time constant of the trace smoothing (display only; the waterfall keeps the
  * per-line average). */
-#define SPECTRUM_TRACE_TAU_S 0.08f
+static const float SPECTRUM_TRACE_TAU_S = 0.08f;
 
 typedef struct
 {
     lv_obj_t *canvas;
     uint16_t *canvas_buf;
     spectrum_cfg_t cfg;
-    uac_host_device_handle_t uac_handle;
+    uac_host_device_handle_t volatile uac_handle; /* written by the UAC task, read by the pipeline */
     TaskHandle_t task_handle;
-    bool running;
+    volatile bool running;
 
     uint8_t channels;
     uint8_t bit_resolution;
@@ -49,6 +49,9 @@ typedef struct
 
     float *fft_buf;
     float *window;
+    /* |X[k]|^2 scratch: off-stack because the pipeline task stack is 8 KB and
+     * fft_size can be 1024. */
+    float *mag;
 
     uint32_t accum_idx;
     uint8_t read_raw[READ_BUF_BYTES];
@@ -106,8 +109,8 @@ typedef struct
     uint32_t st_draw_us_avg;
     uint32_t st_draw_us_max;
     uint32_t st_lock_wait_us_max;
-    float level_hist[SPECTRUM_LEVEL_HIST];
-    uint32_t level_time_ms[SPECTRUM_LEVEL_HIST];
+    float level_hist[SPECTRUM_LEVEL_HIST_MAX];
+    uint32_t level_time_ms[SPECTRUM_LEVEL_HIST_MAX];
     uint32_t level_hist_idx;
     uint32_t level_hist_valid;
 
@@ -125,5 +128,24 @@ typedef struct
 
 extern spectrum_state_t s;
 
+/* Strip mode predicates: shared by the renderer and the setters so a new mode
+ * only changes them here. */
+static inline bool mode_has_trace(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_TRACE || mode == SPECTRUM_MODE_TRACE_PEAK;
+}
+
+static inline bool mode_has_peak(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_TRACE_PEAK || mode == SPECTRUM_MODE_PEAK;
+}
+
+static inline int mode_spec_h(uint8_t mode)
+{
+    return mode == SPECTRUM_MODE_OFF ? SPEC_H_MIN : SPEC_H;
+}
+
 void spectrum_update_marker_px(void);
+void spectrum_apply_line_timing(void);
 void spectrum_pipeline_task(void *arg);
+void spectrum_pipeline_task_exited(void);

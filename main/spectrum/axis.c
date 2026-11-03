@@ -1,5 +1,7 @@
 #include "spectrum/axis.h"
 
+#include "spectrum/layout.h"
+
 #include <stdio.h>
 
 static const uint8_t glyph_3x5[][5] = {
@@ -91,9 +93,12 @@ static void format_khz_label(int khz, bool always_sign, char *out, int out_sz)
         (void)snprintf(out, (size_t)out_sz, "%d", khz);
 }
 
+/* Labels are relative to the IF passband, not to DC: the waterfall is always
+ * tuned to the IF, so "0" must sit where the radio's passband centre is. */
 void spectrum_draw_axis_overlay(uint16_t *canvas_buf,
                                 int disp_w,
                                 int spec_h,
+                                uint32_t if_freq_hz,
                                 uint8_t view_mode,
                                 uint32_t fft_size,
                                 uint32_t sample_freq,
@@ -104,7 +109,7 @@ void spectrum_draw_axis_overlay(uint16_t *canvas_buf,
     if (!canvas_buf || !axis_enabled || disp_w < 2 || spec_h < 8)
         return;
 
-    int nbins = view_mode == 1 ? (int)(fft_size / 2) : (int)fft_size;
+    int nbins = spectrum_view_bins(view_mode, fft_size);
     if (nbins < 2)
         return;
 
@@ -114,30 +119,19 @@ void spectrum_draw_axis_overlay(uint16_t *canvas_buf,
         row[x] = axis_color;
 
     int fs_khz = round_div_i32((int)sample_freq, 1000);
-    int quarter_khz = fs_khz / 4;
+    int if_khz = round_div_i32((int)if_freq_hz, 1000);
 
     int y_lbl = spec_h - 8;
 
     int khz_vals[5];
     int x_anchor[5];
     for (int i = 0; i < 5; i++)
+    {
         x_anchor[i] = (i * (disp_w - 1) + 2) / 4;
-
-    if (view_mode == 1)
-    {
-        khz_vals[0] = -quarter_khz;
-        khz_vals[1] = -(quarter_khz / 2);
-        khz_vals[2] = 0;
-        khz_vals[3] = (quarter_khz / 2);
-        khz_vals[4] = quarter_khz;
-    }
-    else
-    {
-        khz_vals[0] = -((fs_khz * 3) / 4);
-        khz_vals[1] = -(fs_khz / 2);
-        khz_vals[2] = -quarter_khz;
-        khz_vals[3] = 0;
-        khz_vals[4] = quarter_khz;
+        /* Full span covers [-fs/2 .. +fs/2); the IF view covers [0 .. fs/2]. */
+        int abs_khz = (view_mode == SPECTRUM_VIEW_IF) ? (fs_khz * i) / 8
+                                                      : (fs_khz * (i - 2)) / 4;
+        khz_vals[i] = abs_khz - if_khz;
     }
 
     int prev_right = -1000;
@@ -147,6 +141,8 @@ void spectrum_draw_axis_overlay(uint16_t *canvas_buf,
         char txt[8];
         format_khz_label(khz, khz != 0, txt, (int)sizeof(txt));
         int w = text_px_width_3x5(txt);
+        if (w >= disp_w)
+            continue;
         int x = x_anchor[i] - w / 2;
         if (x < 0)
             x = 0;

@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "spectrum/layout.h"
 #include "spectrum/palette.h"
 #include "spectrum/render.h"
 
@@ -85,7 +86,6 @@ static void test_scroll_is_one_row(void)
 
         if (line > 0)
         {
-            /* Every row is exactly the previous frame's row above it. */
             for (int row = 1; row < H; row++)
             {
                 for (int x = 0; x < W; x++)
@@ -94,7 +94,6 @@ static void test_scroll_is_one_row(void)
                           "line %d row %d col %d did not scroll exactly one row", line, row, x);
                 }
             }
-            /* And the new top row is the line just emitted. */
             for (int x = 0; x < W; x++)
             {
                 CHECK(frame[x] == newest[x],
@@ -160,7 +159,7 @@ static void test_peak_marker(void)
  * takes the rest; peak-only draws a dot and no trace. */
 static void test_modes_and_geometry(void)
 {
-    enum { W = 4, H = 76, SH_MIN = 13, RING = H - SH_MIN };
+    enum { W = 4, H = DISP_H, SH_MIN = SPEC_H_MIN, RING = WF_STORE_H };
     static uint16_t canvas[W * H];
     static int16_t ring[RING * W];
     uint32_t idx = 0;

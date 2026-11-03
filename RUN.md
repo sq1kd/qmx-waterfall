@@ -62,4 +62,5 @@ esptool -b 460800 --before default-reset --after hard-reset --chip esp32s3 write
 ## Tasks
 
 `mise tasks` lists everything: `bootstrap`, `deps`, `build`, `clean`, `fullclean`,
-`flash`, `monitor`, `size`, `release`.
+`flash`, `monitor`, `size`, `release`, `test`. `mise run test` is the host-only
+suite (`test/run.sh`, ASan/UBSan); it needs no ESP-IDF or board.

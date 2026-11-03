@@ -15,7 +15,7 @@ fi
 if [ -f "$ROOT_DIR/dependencies.lock" ]; then
   echo
   echo "Locked managed components:"
-  rg -n "name:|version:" "$ROOT_DIR/dependencies.lock" | sed 's/^/  /'
+  grep -nE "name:|version:" "$ROOT_DIR/dependencies.lock" | sed -E 's/^/  /'
 else
   echo "dependencies.lock not found"
 fi

@@ -1,12 +1,14 @@
-menu "Example Configuration"
+menu "QMX Waterfall Configuration"
 
     orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
 
     config APP_QUIT_PIN
-        int "APP Quit button GPIO pin"
+        int "Shutdown button GPIO pin"
         range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
         default 0
         help
-            GPIO pin number to be used as APP_QUIT button.
+            GPIO pin connected to the shutdown button. A low level (falling
+            edge) on this pin stops the USB host, flushes settings to NVS and
+            shuts the radio waterfall down cleanly.
 
 endmenu

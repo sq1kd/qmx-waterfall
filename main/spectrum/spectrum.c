@@ -30,21 +30,49 @@ typedef enum
     SPEC_ST_STOPPING,
 } spectrum_lifecycle_t;
 
+/* The pipeline draws under the LVGL port lock on core 1; core 0 belongs to the
+ * USB host library and the UAC task, and a full-frame render+flush there
+ * preempts isochronous IN resubmission. The priority matches the LVGL task. */
+enum
+{
+    SPECTRUM_TASK_STACK = 8192,
+    SPECTRUM_TASK_PRIORITY = 3,
+    SPECTRUM_TASK_CORE = 1,
+    SPECTRUM_TASK_STOP_WAIT_MS = 500,
+};
+
+static StaticSemaphore_t s_lifecycle_mutex_buf;
+static StaticSemaphore_t s_task_exit_buf;
 static SemaphoreHandle_t s_lifecycle_mutex;
+static SemaphoreHandle_t s_task_exit;
+static portMUX_TYPE s_lock_init_spin = portMUX_INITIALIZER_UNLOCKED;
 static spectrum_lifecycle_t s_lifecycle = SPEC_ST_STOPPED;
 static uint32_t s_init_failures;
 /* ANSI vs AES3 was pinned on hardware with `sp ffttest`: gain 1.000000,
  * bias -0.000016 dB, max bin error 0.008 dB, AES3 ~1.6x faster. */
-static uint8_t s_fft_impl = SPECTRUM_FFT_AES3_AVAILABLE ? SPECTRUM_FFT_AES3 : SPECTRUM_FFT_ANSI;
+/* Default for the next spectrum_init(); the live value lives in s.fft_impl. */
+static uint8_t s_fft_impl_default = SPECTRUM_FFT_AES3_AVAILABLE ? SPECTRUM_FFT_AES3 : SPECTRUM_FFT_ANSI;
+
+/* Static, so first use neither allocates nor races: the CLI task and the UAC
+ * callback can both reach this module before spectrum_init(). */
+static void spectrum_lock_init(void)
+{
+    if (s_lifecycle_mutex != NULL && s_task_exit != NULL)
+        return;
+
+    taskENTER_CRITICAL(&s_lock_init_spin);
+    if (s_lifecycle_mutex == NULL)
+        s_lifecycle_mutex = xSemaphoreCreateMutexStatic(&s_lifecycle_mutex_buf);
+    if (s_task_exit == NULL)
+        s_task_exit = xSemaphoreCreateBinaryStatic(&s_task_exit_buf);
+    taskEXIT_CRITICAL(&s_lock_init_spin);
+}
 
 static bool spectrum_lock(TickType_t timeout)
 {
+    spectrum_lock_init();
     if (s_lifecycle_mutex == NULL)
-    {
-        s_lifecycle_mutex = xSemaphoreCreateMutex();
-        if (s_lifecycle_mutex == NULL)
-            return false;
-    }
+        return false;
     return xSemaphoreTake(s_lifecycle_mutex, timeout) == pdTRUE;
 }
 
@@ -52,111 +80,6 @@ static void spectrum_unlock(void)
 {
     if (s_lifecycle_mutex)
         xSemaphoreGive(s_lifecycle_mutex);
-}
-
-static float spectrum_fft_rate(void)
-{
-    if (s.sample_freq == 0 || s.cfg.fft_size == 0)
-        return 0.0f;
-    return (float)s.sample_freq / (float)s.cfg.fft_size;
-}
-
-static void spectrum_apply_line_timing(void);
-
-/* Waterfall lines average a whole number of FFTs, so the rates are
- * fft_rate / group: level 1 = slowest (~15 lines/s), N = fastest (fft_rate/2). */
-static uint32_t spectrum_group_slowest(void)
-{
-    float rate = spectrum_fft_rate();
-    if (rate <= 0.0f)
-        return 6; /* nominal 512-point FFT at 48 kHz */
-    uint32_t g = (uint32_t)floorf(rate / SPECTRUM_SPEED_MIN_LPS);
-    if (g < 2)
-        g = 2;
-    if (g > 200)
-        g = 200;
-    return g;
-}
-
-uint8_t spectrum_speed_level_count(void)
-{
-    return (uint8_t)(spectrum_group_slowest() - 1); /* groups 2..slowest */
-}
-
-float spectrum_speed_lps_from_level(uint8_t level)
-{
-    float rate = spectrum_fft_rate();
-    if (rate <= 0.0f)
-        rate = 48000.0f / 512.0f;
-
-    uint8_t count = spectrum_speed_level_count();
-    if (level < 1)
-        level = 1;
-    if (level > count)
-        level = count;
-
-    uint32_t group = spectrum_group_slowest() - (uint32_t)(level - 1);
-    if (group < 2)
-        group = 2;
-    return rate / (float)group;
-}
-
-uint8_t spectrum_speed_level_from_lps(float lines_per_sec)
-{
-    float rate = spectrum_fft_rate();
-    if (rate <= 0.0f)
-        rate = 48000.0f / 512.0f;
-    if (lines_per_sec < SPECTRUM_SPEED_MIN_LPS)
-        lines_per_sec = SPECTRUM_SPEED_MIN_LPS;
-
-    uint32_t slowest = spectrum_group_slowest();
-    uint32_t group = (uint32_t)lroundf(rate / lines_per_sec);
-    if (group < 2)
-        group = 2;
-    if (group > slowest)
-        group = slowest;
-
-    return (uint8_t)(slowest - group + 1);
-}
-
-uint8_t spectrum_get_speed_level(void)
-{
-    return s.speed_level;
-}
-
-uint8_t spectrum_set_speed_level(uint8_t level)
-{
-    s.speed_level = level;
-    spectrum_apply_line_timing();
-    ESP_LOGI(TAG, "[sp] speed=%u/%u (%.1f lines/s, %lu fft/line, %.1f s history)",
-             s.speed_level, spectrum_speed_level_count(), s.speed_lps,
-             (unsigned long)s.line_group, (float)(DISP_H - SPEC_H) / s.speed_lps);
-    return s.speed_level;
-}
-
-/* Derive the line grouping, peak decay and trace smoothing from the current
- * speed and FFT rate. */
-static void spectrum_apply_line_timing(void)
-{
-    uint8_t count = spectrum_speed_level_count();
-    if (s.speed_level < 1)
-        s.speed_level = 1;
-    if (s.speed_level > count)
-        s.speed_level = count;
-
-    uint32_t group = spectrum_group_slowest() - (uint32_t)(s.speed_level - 1);
-    if (group < 2)
-        group = 2;
-    s.line_group = group;
-    s.speed_lps = spectrum_speed_lps_from_level(s.speed_level);
-
-    float speed = s.speed_lps > 0.0f ? s.speed_lps : 1.0f;
-    s.peak_decay_db = SPECTRUM_PEAK_DECAY_DB_PER_S / speed;
-    s.trace_alpha = 1.0f - expf(-(1.0f / speed) / SPECTRUM_TRACE_TAU_S);
-    if (s.trace_alpha < 0.02f)
-        s.trace_alpha = 0.02f;
-    if (s.trace_alpha > 0.9f)
-        s.trace_alpha = 0.9f;
 }
 
 static void spectrum_cleanup_state(spectrum_state_t *st)
@@ -182,6 +105,7 @@ static void spectrum_cleanup_state(spectrum_state_t *st)
 
     free(st->window);
     free(st->fft_buf);
+    free(st->mag);
     free(st->wf_db);
     if (!keep_canvas_buf)
     {
@@ -274,8 +198,8 @@ void spectrum_set_level_offset_db(float offset_db)
 
 void spectrum_set_view_mode(uint8_t mode)
 {
-    if (mode > 1)
-        mode = 0;
+    if (mode > SPECTRUM_VIEW_IF)
+        mode = SPECTRUM_VIEW_FULL;
     s.view_mode = mode;
     spectrum_update_marker_px();
     ESP_LOGI(TAG, "[sp] view_mode=%u marker_px=%d", mode, s.marker_px);
@@ -306,7 +230,7 @@ void spectrum_set_spec_mode(uint8_t mode)
     if (mode > SPECTRUM_MODE_OFF)
         mode = SPECTRUM_MODE_TRACE_PEAK;
     s.spec_mode = mode;
-    if (mode != SPECTRUM_MODE_TRACE_PEAK && mode != SPECTRUM_MODE_PEAK)
+    if (!mode_has_peak(mode))
     {
         for (int i = 0; i < DISP_W; i++)
             s.peak_db[i] = s.wf_db_floor;
@@ -325,302 +249,93 @@ esp_err_t spectrum_set_fft_impl(uint8_t impl)
     {
         if (!SPECTRUM_FFT_AES3_AVAILABLE)
             return ESP_ERR_NOT_SUPPORTED;
-        s_fft_impl = SPECTRUM_FFT_AES3;
+        s_fft_impl_default = SPECTRUM_FFT_AES3;
     }
     else
     {
-        s_fft_impl = SPECTRUM_FFT_ANSI;
+        s_fft_impl_default = SPECTRUM_FFT_ANSI;
     }
-    s.fft_impl = s_fft_impl;
+    s.fft_impl = s_fft_impl_default;
     ESP_LOGI(TAG, "[sp] fft=%s", s.fft_impl ? "aes3" : "ansi");
     return ESP_OK;
 }
 
-esp_err_t spectrum_fft_selftest(void)
+/* Stream parameters arrive from the UAC descriptor before spectrum_init()
+ * runs, so they are staged and applied after the state reset. */
+static struct
 {
-    enum { N = 512, ITERS = 200 };
-    const size_t buf_bytes = (size_t)N * 2 * sizeof(float);
+    bool valid;
+    uint8_t channels;
+    uint8_t bit_resolution;
+    uint32_t sample_freq;
+} s_pending_stream;
 
-    if (!s.dsp_initialized)
-    {
-        esp_err_t r = dsps_fft2r_init_fc32(NULL, N);
-        if (r != ESP_OK && r != ESP_ERR_DSP_REINITIALIZED)
-        {
-            ESP_LOGE(TAG, "[sp] fft selftest: init failed: %s", esp_err_to_name(r));
-            return r;
-        }
-    }
+enum
+{
+    DEFAULT_CHANNELS = 2,
+    DEFAULT_BIT_RESOLUTION = 24,
+    DEFAULT_FFT_SIZE = 512,
+    MIN_FFT_SIZE = 256,
+};
 
-    float *a = heap_caps_aligned_alloc(16, buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    float *b = heap_caps_aligned_alloc(16, buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    float *ma = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    float *mb = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    float *win = heap_caps_malloc((size_t)N * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!a || !b || !ma || !mb || !win)
-    {
-        free(a);
-        free(b);
-        free(ma);
-        free(mb);
-        free(win);
-        return ESP_ERR_NO_MEM;
-    }
+static const uint32_t k_default_sample_freq = 48000;
 
-    spectrum_build_hann_window(win, N);
-    const float two_pi = 6.283185307179586f;
-    uint32_t lcg = 0x12345678u;
-    for (int n = 0; n < N; n++)
-    {
-        float ph1 = two_pi * 0.137f * (float)n;
-        float ph2 = two_pi * 0.311f * (float)n + 0.7f;
-        lcg = lcg * 1664525u + 1013904223u;
-        float n1 = (float)(int32_t)lcg / 2147483648.0f;
-        lcg = lcg * 1664525u + 1013904223u;
-        float n2 = (float)(int32_t)lcg / 2147483648.0f;
-        float re = 0.40f * cosf(ph1) + 0.15f * cosf(ph2) + 0.002f * n1;
-        float im = 0.40f * sinf(ph1) + 0.15f * sinf(ph2 + 1.1f) + 0.002f * n2;
-        a[n * 2] = re * win[n];
-        a[n * 2 + 1] = im * win[n];
-    }
-    memcpy(b, a, buf_bytes);
-
-    spectrum_fft_power(a, N, SPECTRUM_FFT_ANSI, ma);
-    spectrum_fft_power(b, N, SPECTRUM_FFT_AES3, mb);
-
-    double max_abs = 0.0;
-    double sum_sq = 0.0;
-    double sum_diff = 0.0;
-    double sum_a = 0.0;
-    double sum_b = 0.0;
-    int worst_bin = 0;
-    for (int k = 0; k < N; k++)
-    {
-        double da = 10.0 * log10((double)ma[k] + 1e-12);
-        double db = 10.0 * log10((double)mb[k] + 1e-12);
-        double d = da - db;
-        double ad = fabs(d);
-        if (ad > max_abs)
-        {
-            max_abs = ad;
-            worst_bin = k;
-        }
-        sum_sq += d * d;
-        sum_diff += d;
-        sum_a += ma[k];
-        sum_b += mb[k];
-    }
-    double rms = sqrt(sum_sq / N);
-    double bias = sum_diff / N;
-    double gain = sum_b > 0.0 ? sum_a / sum_b : 0.0;
-
-    int64_t t0 = esp_timer_get_time();
-    for (int i = 0; i < ITERS; i++)
-        spectrum_fft_power(a, N, SPECTRUM_FFT_ANSI, ma);
-    int64_t t_ansi = (esp_timer_get_time() - t0) / ITERS;
-
-    int64_t t_aes3 = -1;
-#if SPECTRUM_FFT_AES3_AVAILABLE && defined(dsps_fft2r_fc32_aes3_enabled)
-    t0 = esp_timer_get_time();
-    for (int i = 0; i < ITERS; i++)
-        spectrum_fft_power(b, N, SPECTRUM_FFT_AES3, mb);
-    t_aes3 = (esp_timer_get_time() - t0) / ITERS;
-#endif
-
-    ESP_LOGI(TAG, "[sp] fft ab: max=%.6f dB @bin %d rms=%.6f dB bias=%.6f dB gain=%.6f",
-             max_abs, worst_bin, rms, bias, gain);
-    ESP_LOGI(TAG, "[sp] fft time: ansi=%lldus aes3=%lldus (N=%d, %d iters)",
-             (long long)t_ansi, (long long)t_aes3, N, ITERS);
-
-    free(a);
-    free(b);
-    free(ma);
-    free(mb);
-    free(win);
-    return ESP_OK;
+static uint16_t normalize_fft_size(uint16_t requested)
+{
+    if (requested >= MIN_FFT_SIZE && requested <= SPECTRUM_FFT_MAX && (requested & (requested - 1)) == 0)
+        return requested;
+    ESP_LOGW(TAG, "unsupported fft_size %u, using %u", (unsigned)requested, (unsigned)DEFAULT_FFT_SIZE);
+    return DEFAULT_FFT_SIZE;
 }
 
-bool spectrum_copy_canvas(uint16_t *dst, uint32_t pixels)
+static void spectrum_apply_stream_params(void)
 {
-    if (!dst || !s.canvas_buf || pixels < (uint32_t)DISP_W * DISP_H)
-        return false;
-    if (!lvgl_port_lock(100))
-        return false;
-    memcpy(dst, s.canvas_buf, (size_t)DISP_W * DISP_H * sizeof(uint16_t));
-    lvgl_port_unlock();
-    return true;
+    uint8_t channels = s_pending_stream.channels ? s_pending_stream.channels : DEFAULT_CHANNELS;
+    uint8_t bits = s_pending_stream.bit_resolution ? s_pending_stream.bit_resolution : DEFAULT_BIT_RESOLUTION;
+    uint32_t freq = s_pending_stream.sample_freq ? s_pending_stream.sample_freq : k_default_sample_freq;
+
+    s.channels = channels;
+    s.bit_resolution = bits;
+    s.bytes_per_sample = (uint8_t)((bits + 7) / 8);
+    s.sample_freq = freq;
+    spectrum_update_marker_px();
+    spectrum_apply_line_timing();
 }
 
-void spectrum_get_stats(spectrum_stats_t *out)
+void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution, uint32_t sample_freq)
 {
-    if (!out)
-        return;
-    memset(out, 0, sizeof(*out));
+    s_pending_stream.valid = true;
+    s_pending_stream.channels = channels;
+    s_pending_stream.bit_resolution = bit_resolution;
+    s_pending_stream.sample_freq = sample_freq;
 
-    out->fft_frames = s.st_fft_frames;
-    out->lines = s.st_lines;
-    out->draws = s.st_draws;
-    out->draws_skipped = s.st_draws_skipped;
-    out->read_calls = s.st_read_calls;
-    out->bytes_read = s.st_bytes_read;
-    {
-        uint64_t denom = (uint64_t)s.bytes_per_sample * s.channels * s.sample_freq;
-        out->audio_us = denom ? (s.st_bytes_read * 1000000ULL) / denom : 0;
-    }
-    out->run_us = s.st_run_us_start ? (uint64_t)(esp_timer_get_time() - (int64_t)s.st_run_us_start) : 0;
-    out->sample_freq = s.sample_freq;
-    out->frame_bytes = (uint32_t)s.bytes_per_sample * s.channels;
-    out->line_group = s.line_group;
-    if (s.level_hist_valid >= 2)
-    {
-        uint32_t n = s.level_hist_valid;
-        float mean = 0.0f;
-        for (uint32_t i = 0; i < n; i++)
-            mean += s.level_hist[i];
-        mean /= (float)n;
-
-        float var = 0.0f;
-        float lo = 1e9f, hi = -1e9f;
-        for (uint32_t i = 0; i < n; i++)
-        {
-            float d = s.level_hist[i] - mean;
-            var += d * d;
-            if (s.level_hist[i] < lo)
-                lo = s.level_hist[i];
-            if (s.level_hist[i] > hi)
-                hi = s.level_hist[i];
-        }
-        out->level_min_db = lo;
-        out->level_max_db = hi;
-        out->level_std_db = sqrtf(var / (float)n);
-
-        /* Oldest to newest, then a small DFT over candidate ripple periods
-         * (in FFT frames: 1 frame = 10.7 ms). */
-        float best_amp = 0.0f, best_period = 0.0f, amp4 = 0.0f;
-        for (uint32_t p = 2; p <= 64; p++)
-        {
-            float re = 0.0f, im = 0.0f;
-            for (uint32_t i = 0; i < n; i++)
-            {
-                uint32_t idx = (s.level_hist_idx + SPECTRUM_LEVEL_HIST - i) % SPECTRUM_LEVEL_HIST;
-                float v = s.level_hist[idx] - mean;
-                float ph = 6.283185307f * (float)i / (float)p;
-                re += v * cosf(ph);
-                im -= v * sinf(ph);
-            }
-            float amp = 2.0f * sqrtf(re * re + im * im) / (float)n;
-            if (amp > best_amp)
-            {
-                best_amp = amp;
-                best_period = (float)p;
-            }
-            if (p == 4)
-                amp4 = amp;
-        }
-        out->level_period_rows = best_period;
-        out->level_period_db = best_amp;
-        out->level_period4_db = amp4;
-    }
-    out->draw_us_last = s.st_draw_us_last;
-    out->draw_us_avg = s.st_draw_us_avg;
-    out->draw_us_max = s.st_draw_us_max;
-    out->lock_wait_us_max = s.st_lock_wait_us_max;
-    if (s.task_handle)
-        out->stack_free_words = (uint32_t)uxTaskGetStackHighWaterMark(s.task_handle);
-    out->heap_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    out->heap_psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-}
-
-uint32_t spectrum_get_level_history(float *db, uint32_t *time_ms, uint32_t max)
-{
-    uint32_t n = s.level_hist_valid;
-    if (!db || !time_ms || n == 0 || max < n)
-        return 0;
-    for (uint32_t i = 0; i < n; i++)
-    {
-        uint32_t idx = (s.level_hist_idx + SPECTRUM_LEVEL_HIST - (n - i)) % SPECTRUM_LEVEL_HIST;
-        db[i] = s.level_hist[idx];
-        time_ms[i] = s.level_time_ms[idx];
-    }
-    return n;
-}
-
-void spectrum_reset_stats(void)
-{
-    s.st_fft_frames = 0;
-    s.st_lines = 0;
-    s.st_draws = 0;
-    s.st_draws_skipped = 0;
-    s.st_read_calls = 0;
-    s.st_bytes_read = 0;
-    s.st_run_us_start = 0;
-    s.st_draw_us_last = 0;
-    s.st_draw_us_avg = 0;
-    s.st_draw_us_max = 0;
-    s.st_lock_wait_us_max = 0;
-    s.level_hist_idx = 0;
-    s.level_hist_valid = 0;
-    for (int i = 0; i < SPECTRUM_LEVEL_HIST; i++)
-        s.level_hist[i] = 0.0f;
-}
-
-bool spectrum_capture_iq_block(void)
-{
-    if (!s.running || s.wf_db == NULL)
-        return false;
-    s.iq_frames = 0;
-    s.iq_capture_state = 1;
-    return true;
-}
-
-uint32_t spectrum_get_iq_block(spectrum_iq_block_info_t *info,
-                               uint8_t *raw,
-                               uint32_t raw_cap,
-                               int16_t *db_q8,
-                               uint32_t db_cap)
-{
-    if (s.iq_capture_state != 2)
-        return 0;
-
-    uint32_t frames = s.iq_frames;
-    uint32_t fb = s.iq_frame_bytes;
-
-    if (raw && frames > 0 && fb > 0)
-    {
-        uint32_t max_frames = raw_cap / fb;
-        if (frames > max_frames)
-            frames = max_frames;
-        for (uint32_t f = 0; f < frames; f++)
-        {
-            memcpy(raw + (size_t)f * fb, &s.iq_raw[(size_t)f * 8], fb);
-        }
-    }
-
-    if (db_q8 && db_cap >= DISP_W)
-        memcpy(db_q8, s.iq_db, sizeof(s.iq_db));
-
-    if (info)
-    {
-        info->frames = frames;
-        info->frame_bytes = fb;
-        info->fft_size = s.iq_fft_size;
-        info->view_mode = s.iq_view_mode;
-    }
-
-    s.iq_capture_state = 0;
-    return frames;
+    if (s.running)
+        spectrum_apply_stream_params();
 }
 
 esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
 {
+    if (canvas == NULL || cfg == NULL)
+        return ESP_ERR_INVALID_ARG;
+
+    spectrum_lock_init();
     if (!spectrum_lock(portMAX_DELAY))
-    {
         return ESP_ERR_NO_MEM;
-    }
 
     if (s_lifecycle == SPEC_ST_RUNNING)
     {
         spectrum_unlock();
-        ESP_LOGI(TAG, "spectrum already running");
+        /* Reconnect: the caller created a new canvas widget and the pipeline
+         * is still rendering into the old buffer. Rebinding is the only way
+         * to keep both alive; returning early would leave LVGL pointing at a
+         * deleted object. */
+        if (lvgl_port_lock(0))
+        {
+            s.canvas = canvas;
+            lv_canvas_set_buffer(canvas, s.canvas_buf, DISP_W, DISP_H, LV_COLOR_FORMAT_RGB565);
+            lvgl_port_unlock();
+        }
+        ESP_LOGI(TAG, "spectrum already running, canvas rebound");
         return ESP_OK;
     }
     if (s_lifecycle != SPEC_ST_STOPPED)
@@ -635,22 +350,24 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
     memset(&s, 0, sizeof(s));
     s.canvas = canvas;
     s.cfg = *cfg;
+    s.cfg.fft_size = normalize_fft_size(cfg->fft_size);
     s.running = true;
 
-    s.channels = 2;
-    s.bit_resolution = 24;
-    s.bytes_per_sample = 3;
-    s.sample_freq = 48000;
-
+    /* First-frame defaults. app_settings_apply_to_runtime() overwrites them
+     * with the stored settings before the first frame is pushed. */
     s.wf_db_floor = -140.0f;
     s.wf_db_ceil = 10.0f;
     s.wf_palette = 4;
     s.view_mode = 0;
     s.cw_pitch_hz = 700;
     s.spec_mode = SPECTRUM_MODE_TRACE_PEAK;
-    s.fft_impl = s_fft_impl;
-    (void)cfg->lines_per_sec;
-    s.speed_level = spectrum_speed_level_count(); /* fastest */
+    s.fft_impl = s_fft_impl_default;
+
+    spectrum_apply_stream_params();
+    if (cfg->lines_per_sec > 0.0f)
+        s.speed_level = spectrum_speed_level_from_lps(cfg->lines_per_sec);
+    else
+        s.speed_level = spectrum_speed_level_count(); /* fastest */
     spectrum_apply_line_timing();
 
     for (int i = 0; i < DISP_W; i++)
@@ -660,8 +377,20 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         s.peak_db[i] = s.wf_db_floor;
     }
 
+    /* The canvas is the largest buffer and is only touched by LVGL (CPU, not
+     * DMA), so PSRAM keeps internal RAM contiguous for the waterfall ring.
+     * Boards without PSRAM fall back to internal RAM. */
     const size_t buf_bytes = (size_t)DISP_W * DISP_H * sizeof(uint16_t);
-    s.canvas_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s.canvas_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s.canvas_buf)
+    {
+        ESP_LOGI(TAG, "canvas buffer in PSRAM (%u bytes)", (unsigned)buf_bytes);
+    }
+    else
+    {
+        s.canvas_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "canvas buffer in internal RAM (%u bytes)", (unsigned)buf_bytes);
+    }
     if (!s.canvas_buf)
     {
         ESP_LOGE(TAG, "canvas_buf alloc failed (%u bytes)", (unsigned)buf_bytes);
@@ -676,32 +405,11 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         lvgl_port_unlock();
     }
 
-    /* The ESP32-S3 AES3 FFT uses 128-bit PIE loads: keep the buffer 16-byte
-     * aligned so both implementations see the same input. */
-    const size_t fft_bytes = (size_t)cfg->fft_size * 2 * sizeof(float);
-    s.fft_buf = heap_caps_aligned_alloc(16, fft_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s.fft_buf)
-    {
-        ESP_LOGE(TAG, "fft_buf alloc failed");
-        spectrum_cleanup_state(&s);
-        spectrum_mark_init_failed();
-        return ESP_ERR_NO_MEM;
-    }
-    memset(s.fft_buf, 0, fft_bytes);
-
-    s.window = heap_caps_malloc((size_t)cfg->fft_size * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s.window)
-    {
-        ESP_LOGE(TAG, "window alloc failed");
-        spectrum_cleanup_state(&s);
-        spectrum_mark_init_failed();
-        return ESP_ERR_NO_MEM;
-    }
-    spectrum_build_hann_window(s.window, (int)cfg->fft_size);
-
-    /* One stored row per displayed row: int16 q8 dB, internal RAM (28 KB). */
+    /* One stored row per displayed row: int16 q8 dB in internal RAM. */
     const size_t wf_bytes = (size_t)WF_STORE_H * DISP_W * sizeof(int16_t);
     s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s.wf_db)
+        s.wf_db = heap_caps_malloc(wf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s.wf_db)
     {
         ESP_LOGE(TAG, "wf_db alloc failed (%u bytes), internal free=%u",
@@ -715,7 +423,36 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         s.wf_db[i] = floor_q8;
     s.wf_write_idx = 0;
 
-    esp_err_t ret = dsps_fft2r_init_fc32(NULL, (int)cfg->fft_size);
+    /* The ESP32-S3 AES3 FFT uses 128-bit PIE loads: keep the buffer 16-byte
+     * aligned so both implementations see the same input. */
+    const uint16_t fft_size = s.cfg.fft_size;
+    const size_t fft_bytes = (size_t)fft_size * 2 * sizeof(float);
+    s.fft_buf = heap_caps_aligned_alloc(16, fft_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s.fft_buf)
+    {
+        ESP_LOGE(TAG, "fft_buf alloc failed");
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s.fft_buf, 0, fft_bytes);
+
+    s.window = heap_caps_malloc((size_t)fft_size * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* |X|^2 scratch is written once per FFT and read a few times, so PSRAM is
+     * fast enough and leaves internal RAM for the ring. */
+    s.mag = heap_caps_malloc((size_t)fft_size * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s.mag)
+        s.mag = heap_caps_malloc((size_t)fft_size * sizeof(float), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s.window || !s.mag)
+    {
+        ESP_LOGE(TAG, "window/mag alloc failed");
+        spectrum_cleanup_state(&s);
+        spectrum_mark_init_failed();
+        return ESP_ERR_NO_MEM;
+    }
+    spectrum_build_hann_window(s.window, (int)fft_size);
+
+    esp_err_t ret = dsps_fft2r_init_fc32(NULL, (int)fft_size);
     if (ret == ESP_ERR_DSP_REINITIALIZED)
         ret = ESP_OK; /* the FFT self test already built the tables */
     if (ret != ESP_OK)
@@ -729,7 +466,10 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
 
     spectrum_update_marker_px();
 
-    BaseType_t ok = xTaskCreatePinnedToCore(spectrum_pipeline_task, "spectrum", 8192, NULL, 3, &s.task_handle, 1);
+    BaseType_t ok = xTaskCreatePinnedToCore(spectrum_pipeline_task, "spectrum",
+                                            SPECTRUM_TASK_STACK, NULL,
+                                            SPECTRUM_TASK_PRIORITY, &s.task_handle,
+                                            SPECTRUM_TASK_CORE);
     if (ok != pdTRUE)
     {
         ESP_LOGE(TAG, "Failed to create spectrum task");
@@ -744,20 +484,10 @@ esp_err_t spectrum_init(lv_obj_t *canvas, const spectrum_cfg_t *cfg)
         spectrum_unlock();
     }
 
-    ESP_LOGI(TAG, "Spectrum init OK - FFT %u, %.1f lines/s x %lu fft, ring %dx%d q8 (%.1f KB, internal)",
-             cfg->fft_size, s.speed_lps, (unsigned long)s.line_group,
+    ESP_LOGI(TAG, "spectrum init: fft=%u, %.1f lines/s x %lu fft, ring %dx%d q8 (%.1f KB internal)",
+             (unsigned)fft_size, s.speed_lps, (unsigned long)s.line_group,
              DISP_W, WF_STORE_H, (float)wf_bytes / 1024.0f);
     return ESP_OK;
-}
-
-void spectrum_set_stream_params(uint8_t channels, uint8_t bit_resolution, uint32_t sample_freq)
-{
-    s.channels = channels;
-    s.bit_resolution = bit_resolution;
-    s.sample_freq = sample_freq;
-    s.bytes_per_sample = (uint8_t)((bit_resolution + 7) / 8);
-    spectrum_update_marker_px();
-    spectrum_apply_line_timing();
 }
 
 void spectrum_notify_rx(uac_host_device_handle_t handle)
@@ -779,6 +509,16 @@ void spectrum_notify_rx(uac_host_device_handle_t handle)
         xTaskNotifyGive(h);
 }
 
+/* Called by the pipeline task just before it deletes itself: clearing the
+ * handle first means no reader can touch a dead task, and the semaphore lets
+ * spectrum_stop() know the task no longer holds any buffer. */
+void spectrum_pipeline_task_exited(void)
+{
+    s.task_handle = NULL;
+    if (s_task_exit)
+        xSemaphoreGive(s_task_exit);
+}
+
 void spectrum_stop(void)
 {
     if (!spectrum_lock(portMAX_DELAY))
@@ -798,13 +538,15 @@ void spectrum_stop(void)
 
     if (task)
     {
+        (void)xSemaphoreTake(s_task_exit, 0); /* drop a stale token */
         xTaskNotifyGive(task);
-        for (int i = 0; i < 30 && s.task_handle != NULL; i++)
-            vTaskDelay(pdMS_TO_TICKS(10));
-        if (s.task_handle)
+        /* Never vTaskDelete a task that may be holding the LVGL port lock:
+         * that would wedge the display task forever. If it does not exit in
+         * time, leave the buffers allocated and report it. */
+        if (xSemaphoreTake(s_task_exit, pdMS_TO_TICKS(SPECTRUM_TASK_STOP_WAIT_MS)) != pdTRUE)
         {
-            vTaskDelete(s.task_handle);
-            s.task_handle = NULL;
+            ESP_LOGE(TAG, "pipeline task did not exit; leaking buffers");
+            return;
         }
     }
 

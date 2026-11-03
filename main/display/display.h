@@ -2,12 +2,11 @@
 
 #include <stddef.h>
 #include "lvgl.h"
+#include "ui/geometry.h"
 
-/*
- * Logical display dimensions after 90° CW rotation.
- */
-#define DISP_LOGICAL_W 284
-#define DISP_LOGICAL_H 76
+/* Logical display dimensions after 90° CW rotation. */
+#define DISP_LOGICAL_W QMX_SCREEN_W
+#define DISP_LOGICAL_H QMX_SCREEN_H
 
 /* Startup progress checklist. Fixed row order, one row per stage. */
 typedef enum
@@ -54,15 +53,23 @@ bool display_progress_finish(void);
 bool display_progress_active(void);
 
 /*
+ * Deliberate shutdown: replace the status view with a "stopped" screen so the
+ * frame left on the panel does not read as a fault. Called once, after the
+ * USB teardown.
+ */
+void display_show_stopped(void);
+
+/*
  * Initialise SPI bus, ST7789P3 panel and LVGL.
  * Must be called once before any other display function.
  */
 void display_init(void);
 
 /*
- * Show the disconnected view: the stage rail stays visible (dimmed) with the
- * last known state, unless this boot has not connected yet. Safe from any
- * task; safe to call repeatedly.
+ * Show the disconnected view. The stage rail is reset to pending and shown
+ * only when no spectrum canvas is still on screen; a late disconnect waits
+ * for display_spectrum_detach() to uncover it. Safe from any task; safe to
+ * call repeatedly.
  */
 void display_show_disconnected(void);
 

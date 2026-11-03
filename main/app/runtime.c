@@ -3,6 +3,7 @@
 #include <string.h>
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "app/app_common.h"
 #include "app/runtime_priv.h"
 #include "app/timing_config.h"
 #include "cat/service.h"
@@ -10,7 +11,7 @@
 #include "display/display.h"
 #include "ui/spectrum_ui.h"
 
-static const char *TAG = "runtime";
+static const char *TAG = APP_TAG;
 
 SemaphoreHandle_t s_dev_mutex;
 int s_uac_task_priority;
@@ -26,34 +27,24 @@ runtime_disconnect_state_t s_disc;
 runtime_install_state_t s_install;
 static uint32_t s_conn_epoch;
 
-esp_err_t app_runtime_retry_invalid_state(const char *op_name,
-                                          app_runtime_noarg_fn_t fn,
-                                          uint32_t *attempts_done)
+esp_err_t app_runtime_retry_invalid_state(const char *op_name, app_runtime_noarg_fn_t fn)
 {
     if (!fn)
     {
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t err = ESP_OK;
+    esp_err_t err = ESP_ERR_INVALID_STATE;
     uint32_t attempts = 0;
-    for (; attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS; attempts++)
+    while (attempts < APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS)
     {
         err = fn();
-        if (err == ESP_OK)
-        {
-            break;
-        }
-        if (err != ESP_ERR_INVALID_STATE)
+        attempts++;
+        if (err != ESP_ERR_INVALID_STATE || attempts >= APP_USB_UNINSTALL_RETRY_MAX_ATTEMPTS)
         {
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(APP_USB_UNINSTALL_RETRY_DELAY_MS));
-    }
-
-    if (attempts_done)
-    {
-        *attempts_done = attempts;
     }
 
     if (err != ESP_OK)
@@ -61,13 +52,13 @@ esp_err_t app_runtime_retry_invalid_state(const char *op_name,
         ESP_LOGW(TAG, "%s: %s (attempts=%lu)",
                  op_name ? op_name : "retry_op",
                  esp_err_to_name(err),
-                 (unsigned long)(attempts + 1));
+                 (unsigned long)attempts);
     }
-    else if (attempts > 0)
+    else if (attempts > 1)
     {
         ESP_LOGI(TAG, "%s recovered after %lu retries",
                  op_name ? op_name : "retry_op",
-                 (unsigned long)attempts);
+                 (unsigned long)(attempts - 1));
     }
 
     return err;
@@ -141,11 +132,27 @@ bool app_runtime_clients_uninstalled(void)
     return done;
 }
 
-void app_runtime_shutdown_clients(void)
+static bool iq_start_in_progress(void)
 {
     xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-    s_disc.in_progress = true;
+    bool in_progress = s_iq_start_in_progress;
     xSemaphoreGive(s_dev_mutex);
+    return in_progress;
+}
+
+void app_runtime_shutdown_clients(void)
+{
+    (void)app_runtime_conn_epoch_bump();
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(APP_TASK_STOP_WAIT_MS);
+    while (iq_start_in_progress())
+    {
+        if ((int32_t)(deadline - xTaskGetTickCount()) <= 0)
+        {
+            ESP_LOGW(TAG, "IQ start still in progress at shutdown");
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(APP_TASK_STOP_POLL_MS));
+    }
 
     TickType_t t0 = xTaskGetTickCount();
     spectrum_stop();
@@ -177,8 +184,4 @@ void app_runtime_shutdown_clients(void)
              (unsigned long)((t5 - t4) * portTICK_PERIOD_MS),
              (unsigned long)((t6 - t5) * portTICK_PERIOD_MS),
              (unsigned long)((t6 - t0) * portTICK_PERIOD_MS));
-
-    xSemaphoreTake(s_dev_mutex, portMAX_DELAY);
-    s_disc.in_progress = false;
-    xSemaphoreGive(s_dev_mutex);
 }

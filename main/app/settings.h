@@ -19,10 +19,41 @@ typedef struct
     uint8_t language;      /* ui_lang_t: 0 English, 1 Polish                 */
 } app_settings_t;
 
+/* Every settable value is described once here; the UI, the CLI and the
+ * validator all read the same ranges, steps and defaults. Units are field
+ * units: dB for LEVEL_OFF/FLOOR/CEIL, index for the enums, level number for
+ * SPEED, Hz for CW_PITCH. */
+typedef enum
+{
+    APP_FIELD_LEVEL_OFF = 0,
+    APP_FIELD_VIEW_MODE,
+    APP_FIELD_WF_FLOOR,
+    APP_FIELD_WF_CEIL,
+    APP_FIELD_SPEED,
+    APP_FIELD_PALETTE,
+    APP_FIELD_SPEC_MODE,
+    APP_FIELD_CW_PITCH,
+    APP_FIELD_LANGUAGE,
+    APP_FIELD_COUNT,
+} app_field_id_t;
+
+typedef struct
+{
+    float min;
+    float max; /* < 0 means "dynamic from the spectrum API" */
+    float step;
+    float def;
+} app_field_spec_t;
+
 void app_settings_defaults(app_settings_t *cfg);
 esp_err_t app_settings_init(void);
 void app_settings_get(app_settings_t *out);
 void app_settings_apply_to_runtime(void);
+
+const app_field_spec_t *app_settings_field_spec(app_field_id_t id);
+float app_settings_field_get(const app_settings_t *cfg, app_field_id_t id);
+esp_err_t app_settings_field_set(app_field_id_t id, float value);
+float app_settings_field_clamp(app_field_id_t id, float value);
 
 esp_err_t app_settings_set_level_offset_db(float offset_db);
 esp_err_t app_settings_set_view_mode(uint8_t mode);

@@ -8,6 +8,11 @@
 #define M_PI 3.14159265358979323846f
 #endif
 
+/* |X[k]|^2 with no 1/N and no window-gain scaling: the dB axis is relative,
+ * not dBFS. The palette floor/ceiling and level_offset_db are calibrated
+ * against this scale, so a different FFT size or window shifts every colour
+ * by a constant. Add SPECTRUM_FFT_NORM here (1/(sum w)^2) only together with
+ * a recalibration. */
 void spectrum_fft_power(float *cf, uint32_t n, uint8_t impl, float *mag)
 {
     if (!cf || !mag || n == 0)
@@ -57,43 +62,26 @@ bool spectrum_decode_iq_sample(const uint8_t *frame,
                                float *q_samp)
 {
     if (!frame || !i_samp || !q_samp)
-    {
         return false;
-    }
+    if (bytes_per_sample == 0 || frame_bytes < (uint32_t)bytes_per_sample * 2u)
+        return false;
 
-    if (bit_resolution == 24)
+    /* 24-bit I/Q is signed and little endian in the low 3 bytes of each slot.
+     * A 4-byte slot (24-in-32) only changes the stride between I and Q, so
+     * the decode is the same; a true 32-bit stream loses its low 8 bits here,
+     * which the display resolution does not care about. */
+    if (bit_resolution >= 24)
     {
-        bool use_24in4 = (bytes_per_sample >= 4);
-        if (use_24in4)
-        {
-            if (bytes_per_sample < 4 || frame_bytes < 8)
-            {
-                return false;
-            }
-            int32_t iv = (int32_t)(frame[0] | ((uint32_t)frame[1] << 8) | ((uint32_t)frame[2] << 16));
-            if (iv & 0x800000)
-                iv |= (int32_t)0xFF000000;
-            *i_samp = (float)iv / 8388608.0f;
+        int32_t iv = (int32_t)(frame[0] | ((uint32_t)frame[1] << 8) | ((uint32_t)frame[2] << 16));
+        if (iv & 0x800000)
+            iv |= (int32_t)0xFF000000;
+        *i_samp = (float)iv / 8388608.0f;
 
-            const uint8_t *q = frame + bytes_per_sample;
-            int32_t qv = (int32_t)(q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16));
-            if (qv & 0x800000)
-                qv |= (int32_t)0xFF000000;
-            *q_samp = (float)qv / 8388608.0f;
-        }
-        else
-        {
-            int32_t iv = (int32_t)(frame[0] | ((uint32_t)frame[1] << 8) | ((uint32_t)frame[2] << 16));
-            if (iv & 0x800000)
-                iv |= (int32_t)0xFF000000;
-            *i_samp = (float)iv / 8388608.0f;
-
-            const uint8_t *q = frame + bytes_per_sample;
-            int32_t qv = (int32_t)(q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16));
-            if (qv & 0x800000)
-                qv |= (int32_t)0xFF000000;
-            *q_samp = (float)qv / 8388608.0f;
-        }
+        const uint8_t *q = frame + bytes_per_sample;
+        int32_t qv = (int32_t)(q[0] | ((uint32_t)q[1] << 8) | ((uint32_t)q[2] << 16));
+        if (qv & 0x800000)
+            qv |= (int32_t)0xFF000000;
+        *q_samp = (float)qv / 8388608.0f;
         return true;
     }
 

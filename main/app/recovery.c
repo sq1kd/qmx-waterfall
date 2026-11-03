@@ -4,11 +4,9 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "app/app_common.h"
 #include "app/runtime.h"
 #include "app/timing_config.h"
-
-#define RECOVERY_TIMEOUT_TICKS pdMS_TO_TICKS(APP_RECOVERY_WATCHDOG_MS)
-#define RECOVERY_BACKOFF_MS_MAX APP_RECOVERY_BACKOFF_MAX_MS
 
 typedef enum
 {
@@ -19,19 +17,15 @@ typedef enum
 
 typedef struct
 {
-    uint32_t mark_ms;
     uint32_t close_ms;
-    uint32_t total_ms;
     bool was_iq;
     bool valid;
 } uac_timing_t;
 
 typedef struct
 {
-    uint32_t mark_ms;
     uint32_t cat_ms;
     uint32_t ui_ms;
-    uint32_t total_ms;
     bool valid;
 } cdc_timing_t;
 
@@ -44,7 +38,7 @@ typedef struct
     bool valid;
 } recovery_timing_t;
 
-static const char *TAG = "recovery";
+static const char *TAG = APP_TAG;
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static QueueHandle_t s_app_queue;
@@ -92,7 +86,7 @@ static void recovery_watchdog_task(void *arg)
         {
             TickType_t now = xTaskGetTickCount();
             recovery_started_at = s_recovery_started_at;
-            timed_out = (now - recovery_started_at) >= RECOVERY_TIMEOUT_TICKS;
+            timed_out = (now - recovery_started_at) >= pdMS_TO_TICKS(APP_RECOVERY_WATCHDOG_MS);
         }
         taskEXIT_CRITICAL(&s_lock);
 
@@ -206,8 +200,8 @@ static uint32_t compute_backoff_ms_locked(void)
         if (n > 5)
             n = 5;
         backoff = 100u * (1u << n);
-        if (backoff > RECOVERY_BACKOFF_MS_MAX)
-            backoff = RECOVERY_BACKOFF_MS_MAX;
+        if (backoff > APP_RECOVERY_BACKOFF_MAX_MS)
+            backoff = APP_RECOVERY_BACKOFF_MAX_MS;
     }
     return backoff;
 }
@@ -249,9 +243,27 @@ void recovery_init(QueueHandle_t app_queue)
 
 bool recovery_on_disconnect(recovery_source_t source)
 {
+    bool *seen;
+    bool *warned;
+    switch (source)
+    {
+    case RECOVERY_SRC_UAC:
+        seen = &s_uac_seen;
+        warned = &s_uac_drop_warned;
+        break;
+    case RECOVERY_SRC_CDC:
+        seen = &s_cdc_seen;
+        warned = &s_cdc_drop_warned;
+        break;
+    default:
+        return false;
+    }
+
     bool started_cycle = false;
-    bool drop_dup_uac = false;
-    bool drop_dup_cdc = false;
+    bool bump_epoch = false;
+    bool duplicate = false;
+    bool warn_duplicate = false;
+    uint32_t cycle_id;
     recovery_state_t log_state = RECOVERY_ST_RUNNING;
 
     taskENTER_CRITICAL(&s_lock);
@@ -259,7 +271,6 @@ bool recovery_on_disconnect(recovery_source_t source)
     {
         s_state = RECOVERY_ST_DISCONNECTING;
         s_cycle_id++;
-        (void)app_runtime_conn_epoch_bump();
         s_cycle_started_at = xTaskGetTickCount();
         memset(&s_uac_timing, 0, sizeof(s_uac_timing));
         memset(&s_cdc_timing, 0, sizeof(s_cdc_timing));
@@ -269,84 +280,45 @@ bool recovery_on_disconnect(recovery_source_t source)
         s_uac_drop_warned = false;
         s_cdc_drop_warned = false;
         started_cycle = true;
+        bump_epoch = true;
     }
 
-    if (source == RECOVERY_SRC_UAC)
+    cycle_id = s_cycle_id;
+    if (*seen)
     {
-        if (s_uac_seen)
+        duplicate = true;
+        if (!*warned)
         {
-            if (!s_uac_drop_warned)
-            {
-                s_uac_drop_warned = true;
-                drop_dup_uac = true;
-            }
+            *warned = true;
+            warn_duplicate = true;
             log_state = s_state;
-            taskEXIT_CRITICAL(&s_lock);
-            if (started_cycle)
-            {
-                ESP_LOGD(TAG, "cycle=%lu start state=%s",
-                         (unsigned long)s_cycle_id,
-                         state_to_str(RECOVERY_ST_DISCONNECTING));
-            }
-            if (drop_dup_uac)
-            {
-                ESP_LOGW(TAG, "drop duplicate UAC disconnect in state=%s", state_to_str(log_state));
-            }
-            return false;
         }
-        s_uac_seen = true;
-        taskEXIT_CRITICAL(&s_lock);
-        if (started_cycle)
-        {
-            ESP_LOGD(TAG, "cycle=%lu start state=%s",
-                     (unsigned long)s_cycle_id,
-                     state_to_str(RECOVERY_ST_DISCONNECTING));
-        }
-        return true;
     }
-
-    if (source == RECOVERY_SRC_CDC)
+    else
     {
-        if (s_cdc_seen)
-        {
-            if (!s_cdc_drop_warned)
-            {
-                s_cdc_drop_warned = true;
-                drop_dup_cdc = true;
-            }
-            log_state = s_state;
-            taskEXIT_CRITICAL(&s_lock);
-            if (started_cycle)
-            {
-                ESP_LOGD(TAG, "cycle=%lu start state=%s",
-                         (unsigned long)s_cycle_id,
-                         state_to_str(RECOVERY_ST_DISCONNECTING));
-            }
-            if (drop_dup_cdc)
-            {
-                ESP_LOGW(TAG, "drop duplicate CDC disconnect in state=%s", state_to_str(log_state));
-            }
-            return false;
-        }
-        s_cdc_seen = true;
-        taskEXIT_CRITICAL(&s_lock);
-        if (started_cycle)
-        {
-            ESP_LOGD(TAG, "cycle=%lu start state=%s",
-                     (unsigned long)s_cycle_id,
-                     state_to_str(RECOVERY_ST_DISCONNECTING));
-        }
-        return true;
+        *seen = true;
     }
-
     taskEXIT_CRITICAL(&s_lock);
+
+    /* s_dev_mutex must not be taken with the scheduler suspended. */
+    if (bump_epoch)
+    {
+        (void)app_runtime_conn_epoch_bump();
+    }
     if (started_cycle)
     {
         ESP_LOGD(TAG, "cycle=%lu start state=%s",
-                 (unsigned long)s_cycle_id,
+                 (unsigned long)cycle_id,
                  state_to_str(RECOVERY_ST_DISCONNECTING));
     }
-    return false;
+    if (warn_duplicate)
+    {
+        ESP_LOGW(TAG, "drop duplicate %s disconnect in state=%s",
+                 source == RECOVERY_SRC_UAC ? "UAC" : "CDC",
+                 state_to_str(log_state));
+    }
+
+    return !duplicate;
 }
 
 bool recovery_request(void)
@@ -425,33 +397,20 @@ uint32_t recovery_get_backoff_ms(void)
     return backoff;
 }
 
-bool recovery_is_active(void)
-{
-    bool active;
-    taskENTER_CRITICAL(&s_lock);
-    active = s_state != RECOVERY_ST_RUNNING;
-    taskEXIT_CRITICAL(&s_lock);
-    return active;
-}
-
-void recovery_record_uac_timing(uint32_t mark_ms, uint32_t close_ms, uint32_t total_ms, bool was_iq)
+void recovery_record_uac_timing(uint32_t close_ms, bool was_iq)
 {
     taskENTER_CRITICAL(&s_lock);
-    s_uac_timing.mark_ms = mark_ms;
     s_uac_timing.close_ms = close_ms;
-    s_uac_timing.total_ms = total_ms;
     s_uac_timing.was_iq = was_iq;
     s_uac_timing.valid = true;
     taskEXIT_CRITICAL(&s_lock);
 }
 
-void recovery_record_cdc_timing(uint32_t mark_ms, uint32_t cat_ms, uint32_t ui_ms, uint32_t total_ms)
+void recovery_record_cdc_timing(uint32_t cat_ms, uint32_t ui_ms)
 {
     taskENTER_CRITICAL(&s_lock);
-    s_cdc_timing.mark_ms = mark_ms;
     s_cdc_timing.cat_ms = cat_ms;
     s_cdc_timing.ui_ms = ui_ms;
-    s_cdc_timing.total_ms = total_ms;
     s_cdc_timing.valid = true;
     taskEXIT_CRITICAL(&s_lock);
 }

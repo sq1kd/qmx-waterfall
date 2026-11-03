@@ -3,7 +3,9 @@
 #include <ctype.h>
 #include <stddef.h>
 
-static const char *const s_text[UI_LANG_COUNT][TXT_COUNT] = {
+/* The outer dimension is inferred so a language added to ui_lang_t without a
+ * row here fails the build instead of silently returning empty strings. */
+static const char *const s_text[][TXT_COUNT] = {
     [UI_LANG_EN] = {
         [TXT_BRAND] = "QMX-waterfall",
         [TXT_CREDIT] = "by SQ1KD",
@@ -11,6 +13,8 @@ static const char *const s_text[UI_LANG_COUNT][TXT_COUNT] = {
         [TXT_PLUG_IN] = "Plug in USB audio + CAT",
         [TXT_DISCONNECTED] = "Device disconnected",
         [TXT_RECONNECT] = "Reconnect USB to continue",
+        [TXT_STOPPED] = "Stopped",
+        [TXT_STOPPED_DETAIL] = "Power cycle to restart",
         [TXT_CONNECTING] = "Connecting",
         [TXT_CONNECT_DETAIL] = "USB audio + CAT",
         [TXT_PROBLEM] = "Connection problem",
@@ -63,6 +67,8 @@ static const char *const s_text[UI_LANG_COUNT][TXT_COUNT] = {
         [TXT_PLUG_IN] = "Podłącz USB audio + CAT",
         [TXT_DISCONNECTED] = "Urządzenie odłączone",
         [TXT_RECONNECT] = "Podłącz USB ponownie",
+        [TXT_STOPPED] = "Zatrzymano",
+        [TXT_STOPPED_DETAIL] = "Wyłącz i włącz zasilanie",
         [TXT_CONNECTING] = "Łączenie",
         [TXT_CONNECT_DETAIL] = "USB audio + CAT",
         [TXT_PROBLEM] = "Problem z połączeniem",
@@ -110,6 +116,9 @@ static const char *const s_text[UI_LANG_COUNT][TXT_COUNT] = {
     },
 };
 
+_Static_assert(sizeof(s_text) / sizeof(s_text[0]) == UI_LANG_COUNT,
+               "string table must have one row per language");
+
 static volatile uint8_t s_lang = UI_LANG_EN;
 
 void ui_i18n_set_lang(uint8_t lang)
@@ -132,12 +141,17 @@ const char *ui_i18n_text(ui_lang_t lang, ui_text_t key)
     return text ? text : "";
 }
 
+const char *ui_i18n_resolve(const char *translated, const char *fallback)
+{
+    if (translated != NULL && translated[0] != '\0')
+        return translated;
+    return fallback != NULL ? fallback : "";
+}
+
 const char *ui_tr(ui_text_t key)
 {
-    const char *text = ui_i18n_text((ui_lang_t)s_lang, key);
-    if (text[0] == '\0')
-        text = ui_i18n_text(UI_LANG_EN, key);
-    return text;
+    return ui_i18n_resolve(ui_i18n_text((ui_lang_t)s_lang, key),
+                           ui_i18n_text(UI_LANG_EN, key));
 }
 
 bool ui_lang_parse(const char *code, uint8_t *out)

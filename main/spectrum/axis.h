@@ -6,6 +6,7 @@
 void spectrum_draw_axis_overlay(uint16_t *canvas_buf,
                                 int disp_w,
                                 int spec_h,
+                                uint32_t if_freq_hz,
                                 uint8_t view_mode,
                                 uint32_t fft_size,
                                 uint32_t sample_freq,

@@ -23,21 +23,6 @@ static const char *TAG = "spectrum";
 #define SPEC_AXIS_LABEL spectrum_rgb565(0xD0, 0xD0, 0xD0)
 #define SPEC_MARKER spectrum_rgb565(0xFF, 0x00, 0x00)
 
-static inline bool mode_has_trace(uint8_t mode)
-{
-    return mode == SPECTRUM_MODE_TRACE || mode == SPECTRUM_MODE_TRACE_PEAK;
-}
-
-static inline bool mode_has_peak(uint8_t mode)
-{
-    return mode == SPECTRUM_MODE_TRACE_PEAK || mode == SPECTRUM_MODE_PEAK;
-}
-
-static inline int mode_spec_h(uint8_t mode)
-{
-    return mode == SPECTRUM_MODE_OFF ? SPEC_H_MIN : SPEC_H;
-}
-
 /* Waterfall rows are stored without the level offset; it is folded into the
  * palette floor/ceiling at draw time so the whole history follows the knob. */
 static void reset_history(void)
@@ -62,7 +47,6 @@ static void reset_history(void)
     s.iq_capture_state = 0;
 }
 
-/* Linear interpolation of a power spectrum onto one display column. */
 static inline float bin_interp(const float *mag, int bins, int px)
 {
     float fbin = (float)px * (float)(bins - 1) / (float)(DISP_W - 1);
@@ -86,11 +70,9 @@ static void emit_line(void)
         return;
 
     const float inv = 1.0f / (float)s.line_acc_n;
-    float power_sum = 0.0f;
     for (int px = 0; px < DISP_W; px++)
     {
-        power_sum += s.line_acc[px] * inv;
-        float db = 10.0f * log10f(s.line_acc[px] * inv + 1e-12f);
+        float db = 10.0f * log10f(s.line_acc[px] * inv + SPECTRUM_POWER_FLOOR);
         s.line_acc[px] = 0.0f;
         s.line_db[px] = db;
         s.trace_db[px] += s.trace_alpha * (db - s.trace_db[px]);
@@ -104,6 +86,13 @@ static void emit_line(void)
     spectrum_store_wf_row(s.wf_db, &s.wf_write_idx, WF_STORE_H, DISP_W, s.line_db);
     s.st_lines++;
 }
+
+enum
+{
+    PIPELINE_NOTIFY_WAIT_MS = 200,
+    PIPELINE_YIELD_EVERY_CHUNKS = 6,
+    DRAW_AVG_SAMPLES = 8,
+};
 
 static void push_frame(void)
 {
@@ -147,7 +136,7 @@ static void push_frame(void)
             s.canvas_buf[y * DISP_W + s.marker_px] = SPEC_MARKER;
 
     spectrum_draw_axis_overlay(s.canvas_buf, DISP_W, spec_h,
-                               s.view_mode, s.cfg.fft_size,
+                               s.cfg.if_freq_hz, s.view_mode, s.cfg.fft_size,
                                s.sample_freq,
                                true,
                                SPEC_AXIS, SPEC_AXIS_LABEL);
@@ -158,7 +147,10 @@ static void push_frame(void)
     s.st_draw_us_last = us;
     if (us > s.st_draw_us_max)
         s.st_draw_us_max = us;
-    s.st_draw_us_avg = s.st_draw_us_avg ? (s.st_draw_us_avg * 7u + us) / 8u : us;
+    /* 1/8 exponential average: a single slow frame must not move it. */
+    s.st_draw_us_avg = s.st_draw_us_avg
+                           ? (s.st_draw_us_avg * (DRAW_AVG_SAMPLES - 1u) + us) / DRAW_AVG_SAMPLES
+                           : us;
     s.st_draws++;
 
     lvgl_port_unlock();
@@ -170,18 +162,138 @@ static void push_frame(void)
         (void)display_progress_finish();
 }
 
+/* Turn one filled FFT block into diagnostics, an optional IQ capture and a
+ * contribution to the current waterfall line. Returns true when that block
+ * completed a line. */
+static bool pipeline_process_block(uint32_t fft_size)
+{
+    spectrum_fft_power(s.fft_buf, fft_size, s.fft_impl, s.mag);
+    spectrum_fftshift_mag(s.mag, (int)fft_size);
+
+    const float *render_mag = s.mag;
+    const int render_bins = spectrum_view_bins(s.view_mode, fft_size);
+    if (s.view_mode == SPECTRUM_VIEW_IF)
+        render_mag = &s.mag[fft_size / 2];
+
+    /* Per-FFT mean level: the banding diagnostic needs the FFT rate, not the
+     * waterfall line rate, or short periodicities alias. */
+    float sum = 0.0f;
+    for (uint32_t k = 0; k < fft_size; k++)
+        sum += s.mag[k];
+    s.level_hist[s.level_hist_idx] = 10.0f * log10f(sum / (float)fft_size + SPECTRUM_POWER_FLOOR);
+    s.level_time_ms[s.level_hist_idx] = (uint32_t)(esp_timer_get_time() / 1000);
+    s.level_hist_idx = (s.level_hist_idx + 1u) % SPECTRUM_LEVEL_HIST_MAX;
+    if (s.level_hist_valid < SPECTRUM_LEVEL_HIST_MAX)
+        s.level_hist_valid++;
+
+    if (s.iq_capture_state == 1 && s.iq_frames == fft_size)
+    {
+        for (int px = 0; px < DISP_W; px++)
+        {
+            float m = bin_interp(render_mag, (int)render_bins, px);
+            s.iq_db[px] = spectrum_db_to_q8(10.0f * log10f(m + SPECTRUM_POWER_FLOOR));
+        }
+        s.iq_capture_state = 2;
+    }
+
+    for (int px = 0; px < DISP_W; px++)
+        s.line_acc[px] += bin_interp(render_mag, (int)render_bins, px);
+    s.line_acc_n++;
+
+    s.line_fft_count++;
+    if (s.line_fft_count < s.line_group)
+        return false;
+
+    s.line_fft_count = 0;
+    emit_line();
+    return true;
+}
+
+/* Drain the UAC endpoint until it has nothing left. Returns true when at
+ * least one waterfall line was completed. */
+static bool pipeline_drain(uint32_t fft_size)
+{
+    const uint8_t bytes_per_sample = s.bytes_per_sample;
+    const uint8_t frame_bytes = (uint8_t)(bytes_per_sample * s.channels);
+    if (frame_bytes == 0)
+        return false;
+
+    int drain_chunks = 0;
+    bool line_pending = false;
+
+    while (true)
+    {
+        uint32_t bytes_read = 0;
+        esp_err_t err = uac_host_device_read(s.uac_handle, s.read_raw,
+                                             sizeof(s.read_raw), &bytes_read, 0);
+        if (err != ESP_OK || bytes_read == 0)
+            break;
+
+        if (s.st_run_us_start == 0)
+            s.st_run_us_start = (uint64_t)esp_timer_get_time();
+        s.st_read_calls++;
+        s.st_bytes_read += bytes_read;
+
+        if (++drain_chunks >= PIPELINE_YIELD_EVERY_CHUNKS)
+        {
+            drain_chunks = 0;
+            taskYIELD();
+        }
+
+        const uint32_t frames = bytes_read / frame_bytes;
+        for (uint32_t f = 0; f < frames; f++)
+        {
+            const uint8_t *p = s.read_raw + f * frame_bytes;
+            float i_samp = 0.0f;
+            float q_samp = 0.0f;
+            if (!spectrum_decode_iq_sample(p, s.bit_resolution, bytes_per_sample,
+                                           frame_bytes, &i_samp, &q_samp))
+                continue;
+
+            if (s.iq_capture_state == 1 && s.accum_idx < fft_size)
+            {
+                if (s.accum_idx == 0)
+                {
+                    s.iq_frames = 0;
+                    s.iq_frame_bytes = frame_bytes;
+                    s.iq_fft_size = (uint16_t)fft_size;
+                    s.iq_view_mode = s.view_mode;
+                }
+                size_t n = frame_bytes <= IQ_RAW_FRAME_MAX_BYTES ? frame_bytes : IQ_RAW_FRAME_MAX_BYTES;
+                memcpy(&s.iq_raw[(size_t)s.accum_idx * IQ_RAW_FRAME_MAX_BYTES], p, n);
+                s.iq_frames++;
+            }
+
+            const uint32_t idx = s.accum_idx;
+            s.fft_buf[idx * 2] = i_samp * s.window[idx];
+            s.fft_buf[idx * 2 + 1] = q_samp * s.window[idx];
+            s.accum_idx++;
+
+            if (s.accum_idx >= fft_size)
+            {
+                s.accum_idx = 0;
+                s.st_fft_frames++;
+                if (pipeline_process_block(fft_size))
+                    line_pending = true;
+            }
+        }
+    }
+
+    return line_pending;
+}
+
 void spectrum_pipeline_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "spectrum task started (fft=%u, %.1f lines/s x %lu fft, view=%u)",
-             s.cfg.fft_size, s.speed_lps, (unsigned long)s.line_group, s.view_mode);
+             (unsigned)s.cfg.fft_size, s.speed_lps, (unsigned long)s.line_group,
+             (unsigned)s.view_mode);
 
     const uint32_t fft_size = s.cfg.fft_size;
 
-    while (s.running)
+    while (true)
     {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
-
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(PIPELINE_NOTIFY_WAIT_MS));
         if (!s.running)
             break;
 
@@ -194,122 +306,11 @@ void spectrum_pipeline_task(void *arg)
         if (s.uac_handle == NULL)
             continue;
 
-        const uint8_t bytes_per_sample = s.bytes_per_sample;
-        const uint8_t frame_bytes = bytes_per_sample * s.channels;
-        int drain_chunks = 0;
-        bool line_pending = false;
-
-        while (true)
-        {
-            uint32_t bytes_read = 0;
-            esp_err_t err = uac_host_device_read(s.uac_handle,
-                                                 s.read_raw,
-                                                 sizeof(s.read_raw),
-                                                 &bytes_read,
-                                                 0);
-            if (err != ESP_OK || bytes_read == 0)
-                break;
-
-            if (s.st_run_us_start == 0)
-                s.st_run_us_start = (uint64_t)esp_timer_get_time();
-            s.st_read_calls++;
-            s.st_bytes_read += bytes_read;
-
-            drain_chunks++;
-            if (drain_chunks >= 6)
-            {
-                drain_chunks = 0;
-                taskYIELD();
-            }
-
-            const uint32_t frames = bytes_read / frame_bytes;
-            for (uint32_t f = 0; f < frames; f++)
-            {
-                const uint8_t *p = s.read_raw + f * frame_bytes;
-                float i_samp = 0.0f;
-                float q_samp = 0.0f;
-                if (!spectrum_decode_iq_sample(p, s.bit_resolution, bytes_per_sample,
-                                               frame_bytes, &i_samp, &q_samp))
-                    continue;
-
-                if (s.iq_capture_state == 1 && s.accum_idx < fft_size)
-                {
-                    if (s.accum_idx == 0)
-                    {
-                        s.iq_frames = 0;
-                        s.iq_frame_bytes = frame_bytes;
-                        s.iq_fft_size = (uint16_t)fft_size;
-                        s.iq_view_mode = s.view_mode;
-                    }
-                    size_t n = frame_bytes <= 8 ? frame_bytes : 8;
-                    memcpy(&s.iq_raw[(size_t)s.accum_idx * 8], p, n);
-                    s.iq_frames++;
-                }
-
-                uint32_t idx = s.accum_idx;
-                s.fft_buf[idx * 2] = i_samp * s.window[idx];
-                s.fft_buf[idx * 2 + 1] = q_samp * s.window[idx];
-                s.accum_idx++;
-
-                if (s.accum_idx >= fft_size)
-                {
-                    s.accum_idx = 0;
-                    s.st_fft_frames++;
-
-                    float mag[fft_size];
-                    spectrum_fft_power(s.fft_buf, fft_size, s.fft_impl, mag);
-                    spectrum_fftshift_mag(mag, (int)fft_size);
-
-                    const float *render_mag = mag;
-                    int render_bins = (int)fft_size;
-                    if (s.view_mode == 1)
-                    {
-                        render_mag = &mag[fft_size / 2];
-                        render_bins = (int)(fft_size / 2);
-                    }
-
-                    {
-                        float sum = 0.0f;
-                        for (uint32_t k = 0; k < fft_size; k++)
-                            sum += mag[k];
-                        s.level_hist[s.level_hist_idx] =
-                            10.0f * log10f(sum / (float)fft_size + 1e-12f);
-                        s.level_time_ms[s.level_hist_idx] = (uint32_t)(esp_timer_get_time() / 1000);
-                        s.level_hist_idx = (s.level_hist_idx + 1u) % SPECTRUM_LEVEL_HIST;
-                        if (s.level_hist_valid < SPECTRUM_LEVEL_HIST)
-                            s.level_hist_valid++;
-                    }
-
-                    if (s.iq_capture_state == 1 && s.iq_frames == fft_size)
-                    {
-                        for (int px = 0; px < DISP_W; px++)
-                        {
-                            float m = bin_interp(render_mag, render_bins, px);
-                            s.iq_db[px] = spectrum_db_to_q8(10.0f * log10f(m + 1e-12f));
-                        }
-                        s.iq_capture_state = 2;
-                    }
-
-                    for (int px = 0; px < DISP_W; px++)
-                        s.line_acc[px] += bin_interp(render_mag, render_bins, px);
-                    s.line_acc_n++;
-
-                    s.line_fft_count++;
-                    if (s.line_fft_count >= s.line_group)
-                    {
-                        s.line_fft_count = 0;
-                        emit_line();
-                        line_pending = true;
-                    }
-                }
-            }
-        }
-
         /* One canvas push per drain, never in the middle of it. */
-        if (line_pending)
+        if (pipeline_drain(fft_size))
             push_frame();
     }
 
-    s.task_handle = NULL;
+    spectrum_pipeline_task_exited();
     vTaskDelete(NULL);
 }

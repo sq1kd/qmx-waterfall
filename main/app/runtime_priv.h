@@ -27,7 +27,6 @@ typedef struct
     bool cdc_pending;
     bool uac_drop_logged;
     bool cdc_drop_logged;
-    bool in_progress;
     bool uac_seen;
 } runtime_disconnect_state_t;
 

@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stddef.h>
 
+#include "spectrum/freq_map.h"
+#include "spectrum/layout.h"
 #include "spectrum/palette.h"
 
 uint16_t spectrum_rgb565(uint8_t r, uint8_t g, uint8_t b)
@@ -31,7 +33,7 @@ static uint16_t blend_rgb565(uint16_t dst, uint16_t src, uint8_t alpha)
 
 static int effective_bins(uint8_t view_mode, uint32_t fft_size)
 {
-    return view_mode == 1 ? (int)(fft_size / 2) : (int)fft_size;
+    return (int)spectrum_view_bins(view_mode, fft_size);
 }
 
 static int bin_to_px(float bin, int disp_w, int nbins)
@@ -219,11 +221,11 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
 
     switch (mode_code)
     {
-    case 1:
+    case SPECTRUM_CAT_MODE_LSB:
         left_bin = center_bin - bw_bins;
         right_bin = center_bin;
         break;
-    case 2:
+    case SPECTRUM_CAT_MODE_USB:
         left_bin = center_bin;
         right_bin = center_bin + bw_bins;
         break;
@@ -246,12 +248,12 @@ void spectrum_draw_filter_overlay(uint16_t *canvas_buf,
     enum { FILTER_MIN_SPAN_PX = 2 };
     if (right_px - left_px < FILTER_MIN_SPAN_PX)
     {
-        if (mode_code == 1)
+        if (mode_code == SPECTRUM_CAT_MODE_LSB)
         {
             left_px = marker_px - FILTER_MIN_SPAN_PX;
             right_px = marker_px;
         }
-        else if (mode_code == 2)
+        else if (mode_code == SPECTRUM_CAT_MODE_USB)
         {
             left_px = marker_px;
             right_px = marker_px + FILTER_MIN_SPAN_PX;

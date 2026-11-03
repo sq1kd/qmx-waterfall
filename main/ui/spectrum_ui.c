@@ -1,5 +1,6 @@
 #include "ui/spectrum_ui.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -12,7 +13,9 @@
 #include "app/settings.h"
 #include "spectrum/spectrum.h"
 #include "ui/fonts.h"
+#include "ui/geometry.h"
 #include "ui/i18n.h"
+#include "ui/theme.h"
 #include "lvgl.h"
 
 #define BTN_UP_GPIO 4
@@ -29,20 +32,6 @@ static const char *TAG = "spectrum_ui";
 
 /* Menu order is deliberate: the two knobs people touch while operating sit
  * first, then the visual preferences, then the rarely changed CW pitch. */
-typedef enum
-{
-    UI_SET_LEVEL_OFF = 0,
-    UI_SET_VIEW_MODE,
-    UI_SET_WF_FLOOR,
-    UI_SET_WF_CEIL,
-    UI_SET_WF_SPEED,
-    UI_SET_WF_PALETTE,
-    UI_SET_WF_MODE,
-    UI_SET_CW_PITCH,
-    UI_SET_LANGUAGE,
-    UI_SET_COUNT,
-} ui_setting_id_t;
-
 typedef struct
 {
     int stable_level;
@@ -56,7 +45,7 @@ typedef struct
 static TaskHandle_t s_ui_task;
 static volatile bool s_ui_enabled;
 static bool s_menu_visible;
-static ui_setting_id_t s_active_setting;
+static app_field_id_t s_active_setting;
 
 static lv_obj_t *s_panel;
 static lv_obj_t *s_title;
@@ -64,15 +53,6 @@ static lv_obj_t *s_value;
 static lv_obj_t *s_bar;
 
 static inline int clamp_i(int v, int lo, int hi)
-{
-    if (v < lo)
-        return lo;
-    if (v > hi)
-        return hi;
-    return v;
-}
-
-static inline float clamp_f(float v, float lo, float hi)
 {
     if (v < lo)
         return lo;
@@ -104,132 +84,71 @@ static const char *ui_palette_name(uint8_t palette)
     }
 }
 
-static int ui_setting_to_slider(const app_settings_t *cfg, ui_setting_id_t id)
+static int ui_setting_to_slider(const app_settings_t *cfg, app_field_id_t id)
 {
-    switch (id)
-    {
-    case UI_SET_LEVEL_OFF:
-        return (int)(cfg->level_offset_db * 10.0f + (cfg->level_offset_db >= 0 ? 0.5f : -0.5f));
-    case UI_SET_VIEW_MODE:
-        return (int)cfg->view_mode;
-    case UI_SET_WF_FLOOR:
-        return (int)(cfg->wf_floor_db + (cfg->wf_floor_db >= 0 ? 0.5f : -0.5f));
-    case UI_SET_WF_CEIL:
-        return (int)(cfg->wf_ceil_db + (cfg->wf_ceil_db >= 0 ? 0.5f : -0.5f));
-    case UI_SET_WF_SPEED:
-        return (int)cfg->speed_level;
-    case UI_SET_WF_PALETTE:
-        return (int)cfg->wf_palette;
-    case UI_SET_WF_MODE:
-        return (int)cfg->spec_mode;
-    case UI_SET_CW_PITCH:
-        return (int)cfg->cw_pitch_hz;
-    case UI_SET_LANGUAGE:
-        return (int)cfg->language;
-    default:
-        return 0;
-    }
+    return (int)lrintf(app_settings_field_get(cfg, id));
 }
 
-static const char *ui_setting_name(ui_setting_id_t id)
+static const char *ui_setting_name(app_field_id_t id)
 {
     switch (id)
     {
-    case UI_SET_LEVEL_OFF:
+    case APP_FIELD_LEVEL_OFF:
         return ui_tr(TXT_SET_LEVEL);
-    case UI_SET_VIEW_MODE:
+    case APP_FIELD_VIEW_MODE:
         return ui_tr(TXT_SET_SPAN);
-    case UI_SET_WF_FLOOR:
+    case APP_FIELD_WF_FLOOR:
         return ui_tr(TXT_SET_FLOOR);
-    case UI_SET_WF_CEIL:
+    case APP_FIELD_WF_CEIL:
         return ui_tr(TXT_SET_CEIL);
-    case UI_SET_WF_SPEED:
+    case APP_FIELD_SPEED:
         return ui_tr(TXT_SET_SPEED);
-    case UI_SET_WF_PALETTE:
+    case APP_FIELD_PALETTE:
         return ui_tr(TXT_SET_PALETTE);
-    case UI_SET_WF_MODE:
+    case APP_FIELD_SPEC_MODE:
         return ui_tr(TXT_SET_DISPLAY);
-    case UI_SET_CW_PITCH:
+    case APP_FIELD_CW_PITCH:
         return ui_tr(TXT_SET_CW_PITCH);
-    case UI_SET_LANGUAGE:
+    case APP_FIELD_LANGUAGE:
         return ui_tr(TXT_SET_LANGUAGE);
     default:
         return "-";
     }
 }
 
-static void ui_setting_range(ui_setting_id_t id, int *min, int *max)
+static void ui_setting_range(app_field_id_t id, int *min, int *max)
 {
-    switch (id)
-    {
-    case UI_SET_LEVEL_OFF:
-        *min = -800;
-        *max = 800;
-        break;
-    case UI_SET_VIEW_MODE:
-        *min = 0;
-        *max = 1;
-        break;
-    case UI_SET_WF_FLOOR:
-        *min = -180;
-        *max = 0;
-        break;
-    case UI_SET_WF_CEIL:
-        *min = -80;
-        *max = 40;
-        break;
-    case UI_SET_WF_SPEED:
-        *min = 1;
-        *max = spectrum_speed_level_count();
-        break;
-    case UI_SET_WF_PALETTE:
-        *min = 0;
-        *max = 6;
-        break;
-    case UI_SET_WF_MODE:
-        *min = 0;
-        *max = 3;
-        break;
-    case UI_SET_CW_PITCH:
-        *min = 400;
-        *max = 1000;
-        break;
-    case UI_SET_LANGUAGE:
-        *min = 0;
-        *max = UI_LANG_COUNT - 1;
-        break;
-    default:
-        *min = 0;
-        *max = 100;
-        break;
-    }
+    /* Clamping a value far outside the range yields the bound itself, so the
+     * dynamic speed limit stays in one place (settings.c). */
+    *min = (int)lrintf(app_settings_field_clamp(id, -1.0e9f));
+    *max = (int)lrintf(app_settings_field_clamp(id, 1.0e9f));
 }
 
-static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t id, char *buf, size_t n)
+static void ui_setting_format_value(const app_settings_t *cfg, app_field_id_t id, char *buf, size_t n)
 {
     switch (id)
     {
-    case UI_SET_LEVEL_OFF:
-        snprintf(buf, n, "%.1f dB", cfg->level_offset_db);
+    case APP_FIELD_LEVEL_OFF:
+        snprintf(buf, n, "%.1f dB", app_settings_field_get(cfg, id));
         break;
-    case UI_SET_VIEW_MODE:
+    case APP_FIELD_VIEW_MODE:
         snprintf(buf, n, "%s", cfg->view_mode == 0 ? ui_tr(TXT_VAL_FULL)
                                                    : ui_tr(TXT_VAL_IF_CENTRED));
         break;
-    case UI_SET_WF_FLOOR:
-        snprintf(buf, n, "%.0f dB", cfg->wf_floor_db);
+    case APP_FIELD_WF_FLOOR:
+        snprintf(buf, n, "%.0f dB", app_settings_field_get(cfg, id));
         break;
-    case UI_SET_WF_CEIL:
-        snprintf(buf, n, "%.0f dB", cfg->wf_ceil_db);
+    case APP_FIELD_WF_CEIL:
+        snprintf(buf, n, "%.0f dB", app_settings_field_get(cfg, id));
         break;
-    case UI_SET_WF_SPEED:
+    case APP_FIELD_SPEED:
         snprintf(buf, n, "%u/%u", (unsigned)cfg->speed_level,
                  (unsigned)spectrum_speed_level_count());
         break;
-    case UI_SET_WF_PALETTE:
+    case APP_FIELD_PALETTE:
         snprintf(buf, n, "%s", ui_palette_name(cfg->wf_palette));
         break;
-    case UI_SET_WF_MODE:
+    case APP_FIELD_SPEC_MODE:
         switch (cfg->spec_mode)
         {
         case 0:
@@ -246,10 +165,10 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
             break;
         }
         break;
-    case UI_SET_CW_PITCH:
+    case APP_FIELD_CW_PITCH:
         snprintf(buf, n, "%u Hz", (unsigned)cfg->cw_pitch_hz);
         break;
-    case UI_SET_LANGUAGE:
+    case APP_FIELD_LANGUAGE:
         snprintf(buf, n, "%s", ui_tr(cfg->language == UI_LANG_PL ? TXT_LANG_PL : TXT_LANG_EN));
         break;
     default:
@@ -258,50 +177,16 @@ static void ui_setting_format_value(const app_settings_t *cfg, ui_setting_id_t i
     }
 }
 
-static void ui_apply_delta(ui_setting_id_t id, int dir)
+static void ui_apply_delta(app_field_id_t id, int dir)
 {
     app_settings_t cfg;
-    app_settings_get(&cfg);
+    const app_field_spec_t *spec = app_settings_field_spec(id);
 
-    switch (id)
-    {
-    case UI_SET_LEVEL_OFF:
-        (void)app_settings_set_level_offset_db(clamp_f(cfg.level_offset_db + 0.5f * (float)dir, -80.0f, 80.0f));
-        break;
-    case UI_SET_VIEW_MODE:
-        (void)app_settings_set_view_mode((uint8_t)clamp_i((int)cfg.view_mode + dir, 0, 1));
-        break;
-    case UI_SET_WF_FLOOR:
-    {
-        float next = clamp_f(cfg.wf_floor_db + 1.0f * (float)dir, -180.0f, cfg.wf_ceil_db - 1.0f);
-        (void)app_settings_set_wf_range(next, cfg.wf_ceil_db);
-    }
-    break;
-    case UI_SET_WF_CEIL:
-    {
-        float next = clamp_f(cfg.wf_ceil_db + 1.0f * (float)dir, cfg.wf_floor_db + 1.0f, 40.0f);
-        (void)app_settings_set_wf_range(cfg.wf_floor_db, next);
-    }
-    break;
-    case UI_SET_WF_SPEED:
-        (void)app_settings_set_speed_level(
-            (uint8_t)clamp_i((int)cfg.speed_level + dir, 1, spectrum_speed_level_count()));
-        break;
-    case UI_SET_WF_PALETTE:
-        (void)app_settings_set_wf_palette((uint8_t)clamp_i((int)cfg.wf_palette + dir, 0, 6));
-        break;
-    case UI_SET_WF_MODE:
-        (void)app_settings_set_spec_mode((uint8_t)clamp_i((int)cfg.spec_mode + dir, 0, 3));
-        break;
-    case UI_SET_CW_PITCH:
-        (void)app_settings_set_cw_pitch_hz((uint16_t)clamp_i((int)cfg.cw_pitch_hz + 10 * dir, 400, 1000));
-        break;
-    case UI_SET_LANGUAGE:
-        (void)app_settings_set_language((uint8_t)clamp_i((int)cfg.language + dir, 0, UI_LANG_COUNT - 1));
-        break;
-    default:
-        break;
-    }
+    if (!spec)
+        return;
+
+    app_settings_get(&cfg);
+    (void)app_settings_field_set(id, app_settings_field_get(&cfg, id) + spec->step * (float)dir);
 }
 
 static void ui_overlay_destroy_locked(void)
@@ -330,29 +215,31 @@ static void ui_overlay_create_locked(void)
 
     /* A floating card, not a strip glued to the panel edge: 4 px of waterfall
      * stay visible below it and the rounded corners read as an overlay. */
+    const int panel_w = QMX_SCREEN_W - 8;
+
     s_panel = lv_obj_create(scr);
     lv_obj_remove_style_all(s_panel);
-    lv_obj_set_size(s_panel, 276, 22);
+    lv_obj_set_size(s_panel, panel_w, 22);
     lv_obj_align(s_panel, LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_obj_set_style_radius(s_panel, 4, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_panel, lv_color_hex(0x101418), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_panel, lv_color_hex(UI_SURFACE), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_panel, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_panel, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_panel, lv_color_hex(0x2B333C), LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_panel, lv_color_hex(UI_BORDER), LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_panel, 0, LV_PART_MAIN);
 
     s_title = lv_label_create(s_panel);
-    lv_obj_set_style_text_color(s_title, lv_color_hex(0x8A94A0), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_title, lv_color_hex(UI_MUTED), LV_PART_MAIN);
     lv_obj_set_style_text_font(s_title, &lv_font_qmx_10, LV_PART_MAIN);
     lv_obj_set_pos(s_title, 6, 1);
 
     s_value = lv_label_create(s_panel);
-    lv_obj_set_style_text_color(s_value, lv_color_hex(0xC8965A), LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_value, lv_color_hex(UI_ACCENT), LV_PART_MAIN);
     lv_obj_set_style_text_font(s_value, &lv_font_qmx_10, LV_PART_MAIN);
     lv_obj_align(s_value, LV_ALIGN_TOP_RIGHT, -6, 1);
 
     s_bar = lv_bar_create(s_panel);
-    lv_obj_set_size(s_bar, 264, 3);
+    lv_obj_set_size(s_bar, panel_w - 12, 3);
     lv_obj_align(s_bar, LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_obj_set_style_radius(s_bar, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(s_bar, 2, LV_PART_INDICATOR);
@@ -360,9 +247,9 @@ static void ui_overlay_create_locked(void)
     lv_obj_set_style_border_width(s_bar, 0, LV_PART_INDICATOR);
     lv_obj_set_style_pad_all(s_bar, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_bar, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(s_bar, lv_color_hex(0x2B333C), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_bar, lv_color_hex(UI_BORDER), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_bar, lv_color_hex(0xC8965A), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_bar, lv_color_hex(UI_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, LV_PART_INDICATOR);
 }
 
@@ -415,7 +302,8 @@ static bool btn_is_pressed(gpio_num_t pin)
     return gpio_get_level(pin) == 0;
 }
 
-static bool btn_tick(gpio_num_t pin, btn_state_t *st, bool *short_press, bool *long_press, bool *repeat_press)
+static bool btn_tick(gpio_num_t pin, btn_state_t *st, bool allow_repeat,
+                     bool *short_press, bool *long_press, bool *repeat_press)
 {
     int sample = btn_is_pressed(pin) ? 1 : 0;
     int debounce_ticks = BTN_DEBOUNCE_MS / BTN_POLL_MS;
@@ -462,7 +350,7 @@ static bool btn_tick(gpio_num_t pin, btn_state_t *st, bool *short_press, bool *l
             st->long_sent = true;
             *long_press = true;
         }
-        if (st->held_ticks >= repeat_start_ticks)
+        if (allow_repeat && st->held_ticks >= repeat_start_ticks)
         {
             st->repeat_ticks++;
             if (st->repeat_ticks >= repeat_ticks)
@@ -491,10 +379,9 @@ static void spectrum_ui_task(void *arg)
         bool down_short = false, down_long = false, down_rep = false;
         bool changed = false;
 
-        (void)btn_tick((gpio_num_t)BTN_UP_GPIO, &up, &up_short, &up_long, &up_rep);
-        (void)btn_tick((gpio_num_t)BTN_OK_GPIO, &ok, &ok_short, &ok_long, &ok_rep);
-        (void)ok_rep;
-        (void)btn_tick((gpio_num_t)BTN_DOWN_GPIO, &down, &down_short, &down_long, &down_rep);
+        (void)btn_tick((gpio_num_t)BTN_UP_GPIO, &up, true, &up_short, &up_long, &up_rep);
+        (void)btn_tick((gpio_num_t)BTN_OK_GPIO, &ok, false, &ok_short, &ok_long, &ok_rep);
+        (void)btn_tick((gpio_num_t)BTN_DOWN_GPIO, &down, true, &down_short, &down_long, &down_rep);
 
         if (s_ui_enabled && spectrum_is_running())
         {
@@ -524,7 +411,7 @@ static void spectrum_ui_task(void *arg)
 
             if (ok_short)
             {
-                s_active_setting = (ui_setting_id_t)((s_active_setting + 1) % UI_SET_COUNT);
+                s_active_setting = (app_field_id_t)((s_active_setting + 1) % APP_FIELD_COUNT);
                 changed = true;
             }
 
@@ -574,7 +461,7 @@ void spectrum_ui_init(void)
         }
     }
 
-    s_active_setting = UI_SET_LEVEL_OFF;
+    s_active_setting = APP_FIELD_LEVEL_OFF;
     s_ui_enabled = false;
     s_menu_visible = false;
 }

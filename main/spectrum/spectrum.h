@@ -9,19 +9,26 @@
 #include "freertos/FreeRTOS.h"
 #include "lvgl.h"
 #include "usb/uac_host.h"
+#include "ui/geometry.h"
 
 /* Number of dB columns the spectrum is rendered into (display width). */
-#define SPECTRUM_IQ_COLUMNS 284
-#define SPECTRUM_DISPLAY_HEIGHT 76
+#define SPECTRUM_IQ_COLUMNS QMX_SCREEN_W
+#define SPECTRUM_DISPLAY_HEIGHT QMX_SCREEN_H
 
 /* Per-line level history kept for diagnostics. */
-#define SPECTRUM_LEVEL_HIST_MAX 1024
+enum
+{
+    SPECTRUM_LEVEL_HIST_MAX = 1024
+};
 
 /* What the strip above the waterfall shows. */
-#define SPECTRUM_MODE_TRACE 0      /* trace only                  */
-#define SPECTRUM_MODE_TRACE_PEAK 1 /* trace + peak hold           */
-#define SPECTRUM_MODE_PEAK 2       /* peak hold only              */
-#define SPECTRUM_MODE_OFF 3        /* nothing (waterfall grows)   */
+typedef enum
+{
+    SPECTRUM_MODE_TRACE = 0,      /* trace only                */
+    SPECTRUM_MODE_TRACE_PEAK = 1, /* trace + peak hold         */
+    SPECTRUM_MODE_PEAK = 2,       /* peak hold only            */
+    SPECTRUM_MODE_OFF = 3,        /* nothing (waterfall grows) */
+} spectrum_mode_t;
 
 /*
  * spectrum display configuration.
@@ -32,7 +39,8 @@ typedef struct
     /* FFT */
     uint16_t fft_size; /* power of 2 (256/512/1024). default: 512 */
 
-    /* Initial waterfall speed; overwritten by the stored setting. */
+    /* Initial waterfall speed, mapped to the nearest level. The stored
+     * setting overwrites it once the settings layer runs. 0 = fastest. */
     float lines_per_sec;
 
     /* IF marker */
@@ -77,12 +85,16 @@ void spectrum_set_spec_mode(uint8_t mode);
 /* Waterfall speed as a 1..N level (no unit in the UI). Every line averages a
  * whole number of FFTs, so only discrete rates exist: level 1 is the slowest
  * (~15 lines/s), N the fastest (fft_rate/2, i.e. ~47 lines/s at 512/48k). */
-#define SPECTRUM_SPEED_MIN_LPS 15.0f
 uint8_t spectrum_speed_level_count(void);
-uint8_t spectrum_get_speed_level(void);
 uint8_t spectrum_set_speed_level(uint8_t level);
 float spectrum_speed_lps_from_level(uint8_t level);
 uint8_t spectrum_speed_level_from_lps(float lines_per_sec);
+
+/* FFT rate (sample_freq / fft_size) and the resulting waterfall history
+ * length in seconds at the current speed. Both return 0 before the stream
+ * parameters are known. */
+float spectrum_fft_rate(void);
+float spectrum_history_seconds(void);
 
 /* FFT implementation selection (SPECTRUM_FFT_ANSI / SPECTRUM_FFT_AES3). */
 uint8_t spectrum_get_fft_impl(void);
@@ -117,7 +129,7 @@ typedef struct
     uint32_t draw_us_max;
     uint32_t lock_wait_us_max;
     uint32_t stack_free_words;
-    /* Input level over the last SPECTRUM_LEVEL_HIST lines: if this ripples,
+    /* Input level over the last SPECTRUM_LEVEL_HIST_MAX lines: if this ripples,
      * the banding is in the received signal, not in the renderer. */
     float level_min_db;
     float level_max_db;

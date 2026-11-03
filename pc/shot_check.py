@@ -3,11 +3,13 @@
 
 Capture the serial console while the command runs, then:
 
-    python3 pc/shot_check.py capture.txt [out.png]
+    python3 pc/shot_check.py capture.txt [out.png] [--strip-rows N]
 
 The dump is the exact RGB565 canvas the firmware pushes to the panel, so the
 numbers below are about what the panel receives, with no camera involved.
-No third-party packages are required (zlib is in the standard library).
+`--strip-rows` is the height of the spectrum strip above the waterfall
+(default 25 = SPEC_H; use 13 for the spectrum-off layout). No third-party
+packages are required (zlib is in the standard library).
 """
 
 from __future__ import annotations
@@ -19,9 +21,13 @@ import sys
 import zlib
 
 PREFIX = re.compile(r"^.*?serial_cli: ?")
+# `mise run monitor | tee` (the workflow both tools document) colourises each
+# line, so the log prefix arrives wrapped in SGR escapes.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def parse(text: str):
+    text = ANSI.sub("", text)
     header = {}
     data = ""
     for raw in text.splitlines():
@@ -87,9 +93,41 @@ def ripple(seq, period: int) -> float:
     return 2 * math.hypot(re, im) / n
 
 
+def parse_args(argv):
+    strip_rows = None
+    positional = []
+    args = list(argv[1:])
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--strip-rows":
+            i += 1
+            if i >= len(args):
+                raise SystemExit("--strip-rows expects a row count")
+            value = args[i]
+        elif arg.startswith("--strip-rows="):
+            value = arg.split("=", 1)[1]
+        elif arg.startswith("-"):
+            raise SystemExit(f"unknown option {arg}")
+        else:
+            positional.append(arg)
+            i += 1
+            continue
+        try:
+            strip_rows = int(value)
+        except ValueError:
+            raise SystemExit(f"--strip-rows expects an integer, got {value!r}") from None
+        i += 1
+    return strip_rows, positional
+
+
 def main(argv):
-    text = open(argv[1], encoding="utf-8", errors="replace").read() if len(argv) > 1 else sys.stdin.read()
-    out_png = argv[2] if len(argv) > 2 else "shot_canvas.png"
+    strip_rows, positional = parse_args(argv)
+    explicit_split = strip_rows is not None
+    if strip_rows is None:
+        strip_rows = 25
+    text = open(positional[0], encoding="utf-8", errors="replace").read() if positional else sys.stdin.read()
+    out_png = positional[1] if len(positional) > 1 else "shot_canvas.png"
 
     header, data = parse(text)
     w, h = header["w"], header["h"]
@@ -107,15 +145,18 @@ def main(argv):
 
     luma = [[0.299 * r + 0.587 * g + 0.114 * b for r, g, b in row] for row in rows]
 
-    # Waterfall = everything below the first row that is nearly uniform dark?
-    # Keep it simple: rows 25..h-1 for the default layout, else the bottom 2/3.
-    wf_top = 25 if h == 76 else int(h * 0.33)
+    if not 0 < strip_rows < h:
+        raise SystemExit(f"--strip-rows {strip_rows} must be between 1 and {h - 1}")
+
+    wf_top = strip_rows
     wf = [sum(luma[y]) / w for y in range(wf_top, h)]
     strip = [sum(luma[y]) / w for y in range(0, wf_top)]
     cols_wf = [sum(luma[y][x] for y in range(wf_top, h)) / (h - wf_top) for x in range(w)]
     cols_strip = [sum(luma[y][x] for y in range(0, wf_top)) / wf_top for x in range(w)]
 
     print(f"canvas {w}x{h}  {header['meta']}")
+    source = "from --strip-rows" if explicit_split else "assuming SPEC_H; use --strip-rows to change"
+    print(f"strip height {wf_top} rows (rows 0..{wf_top - 1}, {source})")
     print(f"strip rows 0..{wf_top - 1}: mean {sum(strip)/len(strip):.1f}  waterfall rows {wf_top}..{h-1}: mean {sum(wf)/len(wf):.1f}")
     print(f"waterfall row luma: min {min(wf):.1f} max {max(wf):.1f} std {math.sqrt(sum((v-sum(wf)/len(wf))**2 for v in wf)/len(wf)):.2f}")
     print("waterfall row autocorrelation 1..12: " + " ".join(f"{l}:{autocorr(wf,l):+.2f}" for l in range(1, 13)))

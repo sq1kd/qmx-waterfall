@@ -1,9 +1,10 @@
 # CAT link behaviour
 
 The radio (QMX, firmware 1_04_010 on the reference unit) exposes one USB CDC
-port. `main/cat/service.c` owns it, runs a single-command-at-a-time state
-machine (150 ms between commands, 700 ms timeout) and publishes state through
-`cat_service_get_status()`.
+port. `main/cat/service.c` owns the link: it runs a single-command-at-a-time
+state machine (150 ms between commands, 700 ms timeout) and publishes state
+through `cat_service_get_status()`. The command table and reply dispatch live
+in `main/cat/commands.c`, IQ-mode polling and recovery in `main/cat/iq.c`.
 
 ## Command budget
 
@@ -60,7 +61,7 @@ discarded once IQ is restored, so no audio-spectrum rows linger.
 
 ## Startup checklist
 
-`main/display/display.c` renders a 2x3 grid of state-coloured badges while the
+`main/display/status.c` renders the stage rail of state-coloured chips while the
 device is connecting (border, background tint and a `+`/`>`/`!`/`.` marker per
 state); the two-line status view is only used for "waiting for device" and
 "disconnected". Badges are driven from the connection callbacks and from the

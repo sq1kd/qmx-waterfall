@@ -5,7 +5,8 @@
 
 /* The UI is intentionally a flat key table: the firmware has one screen and
  * a nine-item menu, so gettext-style catalogs would cost more than they save.
- * Every key MUST exist in every language (see test/test_i18n.c). */
+ * Every key MUST exist in every language: the build checks the row count and
+ * test/test_i18n.c checks each entry. */
 typedef enum
 {
     UI_LANG_EN = 0,
@@ -21,6 +22,8 @@ typedef enum
     TXT_PLUG_IN,
     TXT_DISCONNECTED,
     TXT_RECONNECT,
+    TXT_STOPPED,
+    TXT_STOPPED_DETAIL,
     TXT_CONNECTING,
     TXT_CONNECT_DETAIL,
     TXT_PROBLEM,
@@ -78,6 +81,10 @@ const char *ui_tr(ui_text_t key);
 
 /* Direct lookup, for tests and language pickers. */
 const char *ui_i18n_text(ui_lang_t lang, ui_text_t key);
+
+/* Pick the first non-empty string. Exposed so the host test can exercise the
+ * English fallback without a deliberately half-translated table. */
+const char *ui_i18n_resolve(const char *translated, const char *fallback);
 
 /* Accepts "en"/"pl" (case-insensitive). Returns false for unknown codes. */
 bool ui_lang_parse(const char *code, uint8_t *out);

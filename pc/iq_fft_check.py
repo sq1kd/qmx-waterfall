@@ -14,9 +14,10 @@ Capture a session (for example `mise run monitor | tee capture.txt`, then type
     python3 pc/iq_fft_check.py capture.txt
 
 The reference repeats the firmware's pipeline in double precision: 24-bit
-I/Q decode, Hann window, complex FFT, fftshift, power, optional positive-half
-span, linear interpolation onto 284 columns, 10*log10. Any mismatch in the
-decode, window, FFT or shift convention shows up as a large per-column error.
+I/Q decode (3-byte packed, or 24-in-4 when the radio streams 32-bit words),
+Hann window, complex FFT, fftshift, power, optional positive-half span, linear
+interpolation onto 284 columns, 10*log10. Any mismatch in the decode, window,
+FFT or shift convention shows up as a large per-column error.
 
 No third-party packages are required.
 """
@@ -31,6 +32,9 @@ import sys
 COLUMNS = 284
 EPS = 1e-12
 PREFIX = re.compile(r"^.*?serial_cli: ?")
+# `mise run monitor | tee` (the workflow both tools document) colourises each
+# line, so the log prefix arrives wrapped in SGR escapes.
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # ---------------------------------------------------------------- radix-2 FFT
 
@@ -74,6 +78,7 @@ def db(power: float) -> float:
 
 
 def parse(text: str):
+    text = ANSI.sub("", text)
     header = None
     hexdata = ""
     db_q8: list[int] = []
@@ -108,11 +113,19 @@ def parse(text: str):
 
 
 def decode(raw: bytes, frames: int, frame_bytes: int) -> list[tuple[float, float]]:
+    # The firmware's spectrum_decode_iq_sample reads Q at frame + bytes_per_sample,
+    # so 24-in-4 frames have three padding bytes after I, not a packed Q at +3.
+    bytes_per_sample = frame_bytes // 2
+    if bytes_per_sample not in (3, 4):
+        raise SystemExit(f"unsupported {bytes_per_sample} bytes/sample (expected 3 or 4)")
+    q_offset = 4 if bytes_per_sample >= 4 else 3
+
     out = []
     for f in range(frames):
         base = f * frame_bytes
+        qbase = base + q_offset
         i_raw = raw[base] | (raw[base + 1] << 8) | (raw[base + 2] << 16)
-        q_raw = raw[base + 3] | (raw[base + 4] << 8) | (raw[base + 5] << 16)
+        q_raw = raw[qbase] | (raw[qbase + 1] << 8) | (raw[qbase + 2] << 16)
         if i_raw & 0x800000:
             i_raw -= 1 << 24
         if q_raw & 0x800000:
@@ -154,6 +167,9 @@ def main(argv: list[str]) -> int:
     frames = header["frames"]
     if len(raw) < frames * header["frame_bytes"]:
         raise SystemExit(f"short IQ block: {len(raw)} bytes for {frames} frames")
+
+    if len(db_q8) != COLUMNS:
+        raise SystemExit(f"expected {COLUMNS} DB columns, got {len(db_q8)}")
 
     iq = decode(raw, frames, header["frame_bytes"])
     ref = reference_db(iq, header["fft_size"], header["view_mode"])
