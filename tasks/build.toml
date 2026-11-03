@@ -1,0 +1,23 @@
+# Wrappers around `mise run idf`, which selects the board (QMX_BOARD) and
+# its build/<id>/ directory. Anything not listed: `mise run idf -- <args>`.
+
+[build]
+description = "Build the selected board"
+run = "mise run idf -- build"
+
+[flash]
+description = "Flash the selected board's build (ESPPORT selects the serial port)"
+run = 'mise run idf -- ${ESPPORT:+-p "$ESPPORT"} flash'
+
+[monitor]
+description = "Open the serial monitor (ESPPORT selects the serial port)"
+run = 'mise run idf -- ${ESPPORT:+-p "$ESPPORT"} monitor'
+
+[menuconfig]
+description = "Edit the selected board's generated build/<id>/sdkconfig"
+run = "mise run idf -- menuconfig"
+
+[clean]
+description = "Remove the selected board's build directory"
+run = "mise run idf -- fullclean"
+

@@ -3,13 +3,14 @@
 # ESP-IDF has no mise backend: it ships its own installer for the compilers.
 # `mise bootstrap` provisions it without install.sh:
 #   - clones ESP-IDF into .idf/esp-idf (or checks out the pinned ref)
-#   - installs the target toolchains with idf_tools.py
+#   - installs the toolchains for every target used by boards/
 #   - builds the Python environment with uv (IDF_PYTHON_ENV_PATH), pinned by
 #     IDF's constraints file
 
+min_version = "2026.8.14"
+
 [vars]
 idf_version = "v6.1"
-target = "esp32s3"
 python = "3.14"
 
 [tools]
@@ -21,8 +22,14 @@ uv = "0.13.6"
 # No ambient IDF_PATH/IDF_PYTHON_ENV_PATH is consulted.
 IDF_PATH = "{{config_root}}/.idf/esp-idf"
 IDF_PYTHON_ENV_PATH = "{{config_root}}/.idf/venv"
-IDF_TARGET = "{{vars.target}}"
+# Board profile (a directory under boards/) for build/flash/release; set
+# QMX_BOARD in the shell to pick another.
+QMX_BOARD = "{{ get_env(name='QMX_BOARD', default='n16r8') }}"
 
 [task_config]
 shell = "bash -c"
 includes = ["tasks"]
+
+[tasks.test]
+description = "Host tests: protocol parsers, spectrum math, UI strings (no ESP-IDF)"
+run = "./test/run.sh"

@@ -1,11 +1,82 @@
-[release]
-description = "Build and merge bootloader/partition/app into a single flashable image"
+# Artifact version: nearest vX.Y.Z tag plus commit distance, or the commit
+# hash before the first tag. Only the parent repository counts: the vendored
+# submodule is patched at build time, which must not mark every image dirty.
+[version]
+description = "Print the version used in artifact names"
 run = '''
 set -euo pipefail
-root={{config_root}}
-"$root/tools/idf-env.sh" idf.py build
-version="$(git -C "$root" describe --tags --always --dirty)"
-mkdir -p "$root/dist"
-"$root/tools/idf-env.sh" idf.py merge-bin -o "$root/dist/qmx-waterfall-$version.bin" -f raw
-echo "Release image: dist/qmx-waterfall-$version.bin"
+cd {{config_root}}
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo unknown
+    exit 0
+fi
+dirty=""
+if [ -n "$(git status --porcelain --ignore-submodules=all)" ]; then
+    dirty="-dirty"
+fi
+base=$(git describe --tags --always --match 'v[0-9]*' 2>/dev/null) ||
+    base=$(git rev-parse --short HEAD)
+printf '%s%s\n' "$base" "$dirty"
+'''
+
+[release]
+description = "Build the selected board and write flashable images to dist/"
+run = '''
+set -euo pipefail
+cd {{config_root}}
+board=$QMX_BOARD
+profile="boards/$board/sdkconfig.defaults"
+version=$(mise run -q version)
+case "$version" in
+    *-dirty) echo "release: warning: uncommitted changes, image is '$version'" >&2 ;;
+esac
+
+mise run idf -- build
+
+# Every line of the board profile must survive into the generated sdkconfig;
+# a dropped line means a Kconfig dependency silently overrode the hardware.
+build_dir="$PWD/build/$board"
+missing=0
+while IFS= read -r line; do
+    case "$line" in
+        CONFIG_*=*|'# CONFIG_'*' is not set'*)
+            if ! grep -qxF "$line" "$build_dir/sdkconfig"; then
+                echo "release: $board: '$line' did not reach $build_dir/sdkconfig" >&2
+                missing=$((missing + 1))
+            fi
+            ;;
+    esac
+done <"$profile"
+[ "$missing" -eq 0 ] || exit 1
+
+target=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"$/\1/p' "$build_dir/sdkconfig")
+name="qmx-waterfall-$board-$version"
+out="$PWD/dist"
+mkdir -p "$out"
+
+# idf.py runs esptool from the build directory, so the output path is absolute.
+mise run idf -- merge-bin -o "$out/$name-factory.bin" -f raw
+cp "$build_dir/qmx_waterfall.bin" "$out/$name-app.bin"
+
+(
+    cd "$out"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$name-factory.bin" "$name-app.bin" >"$name.sha256"
+    else
+        shasum -a 256 "$name-factory.bin" "$name-app.bin" >"$name.sha256"
+    fi
+)
+
+echo
+echo "Board:   $board"
+echo "Version: $version"
+echo "Images:"
+ls -l "$out/$name-factory.bin" "$out/$name-app.bin" "$out/$name.sha256"
+echo
+echo "First install (blank board, resets settings):"
+echo "  esptool -b 460800 --before default-reset --after hard-reset \\"
+echo "    --chip $target write-flash 0x0 dist/$name-factory.bin"
+echo "App update (keeps settings):"
+echo "  esptool -b 460800 --before default-reset --after hard-reset \\"
+echo "    --chip $target write-flash 0x10000 dist/$name-app.bin"
 '''

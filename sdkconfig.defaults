@@ -1,20 +1,40 @@
-# This file was generated using idf.py save-defconfig. It can be edited manually.
-# Espressif IoT Development Framework (ESP-IDF) Project Minimal Configuration
+# Project-wide ESP-IDF configuration.
 #
-CONFIG_USB_HOST_HUBS_SUPPORTED=y
+# Hardware (target, flash, PSRAM, display wiring, buttons) lives in a board
+# profile under boards/<id>/sdkconfig.defaults. Builds select exactly one:
+#
+#   mise run build                 # QMX_BOARD, default set in mise.toml
+#   QMX_BOARD=<id> mise run build
+#
+# `sdkconfig` itself is never committed: it is generated per board into
+# build/<id>/sdkconfig. Regenerate this file after a menuconfig change with
+# `idf.py save-defconfig` (see RUN.md).
 
 # Waterfall/spectrum CPU cost matters more than image size here.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-
-# The UAC IN path buffers 9 ms with the defaults (3 URBs x 3 packets); the
-# display push must never cost a 1 ms isochronous packet.
-CONFIG_UAC_NUM_ISOC_URBS=5
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # 100 Hz (the IDF default) quantises every vTaskDelay to 10 ms, which made
 # the LVGL timer loop and the canvas push cadence lumpy on a 47 lines/s
 # waterfall. 1 kHz costs nothing measurable on a 240 MHz S3.
 CONFIG_FREERTOS_HZ=1000
 
-# Boot on boards without PSRAM too: the display falls back to a
-# partial internal draw buffer (the spectrum ring is internal either way).
-CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# --- USB host (QMX audio + CAT over one cable) -----------------------------
+
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# The QMX answers its configuration/string descriptors in one piece; the
+# 256 B default is too small for them.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+
+# The QMX needs longer than the 20 ms defaults to answer after a bus reset.
+CONFIG_USB_HOST_RESET_HOLD_MS=50
+CONFIG_USB_HOST_RESET_RECOVERY_MS=100
+
+# The UAC IN path buffers 9 ms with the defaults (3 URBs x 3 packets); the
+# display push must never cost a 1 ms isochronous packet.
+CONFIG_UAC_NUM_ISOC_URBS=5
+
+# The CAT link owns its timeout/recovery policy (docs/CAT.md); retrying a
+# failed CDC IN transfer inside the driver only delays it.
+CONFIG_USBH_CDC_IN_EP_RETRY_COUNT=0

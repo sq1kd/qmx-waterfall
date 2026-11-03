@@ -11,4 +11,93 @@ menu "QMX Waterfall Configuration"
             edge) on this pin stops the USB host, flushes settings to NVS and
             shuts the radio waterfall down cleanly.
 
+    # The defaults match the reference board. A board profile in boards/
+    # overrides them; see boards/n16r8/sdkconfig.defaults.
+
+    menu "Display (ST7789 over SPI)"
+
+        config QMX_DISP_SCL_GPIO
+            int "SPI clock (SCL) GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 12
+            help
+                GPIO wired to the panel's SCL/CLK pin. SPI2 is used with native
+                IOMUX, so this must be a pin SPI2 can route.
+
+        config QMX_DISP_SDA_GPIO
+            int "SPI data (MOSI) GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 11
+            help
+                GPIO wired to the panel's SDA/MOSI pin. There is no MISO: the
+                display is write-only.
+
+        config QMX_DISP_CS_GPIO
+            int "Chip select GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 10
+
+        config QMX_DISP_DC_GPIO
+            int "Data/command GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 9
+
+        config QMX_DISP_RST_GPIO
+            int "Reset GPIO (-1 for none)"
+            range -1 ENV_GPIO_OUT_RANGE_MAX
+            default 8
+
+        config QMX_DISP_BL_GPIO
+            int "Backlight GPIO (-1 for none)"
+            range -1 ENV_GPIO_OUT_RANGE_MAX
+            default 7
+            help
+                Driven low at boot (the reference panel's backlight is
+                active-low; 0 = on).
+
+        config QMX_DISP_X_GAP
+            int "Panel x offset (columns in the controller frame buffer)"
+            range 0 319
+            default 82
+            help
+                The 76 px wide window starts at this column inside the
+                controller's frame buffer.
+
+        config QMX_DISP_Y_GAP
+            int "Panel y offset (rows in the controller frame buffer)"
+            range 0 319
+            default 18
+            help
+                The 284 px tall window starts at this row inside the
+                controller's frame buffer.
+
+        config QMX_DISP_SPI_CLK_HZ
+            int "SPI clock (Hz)"
+            range 1000000 80000000
+            default 40000000
+            help
+                40 MHz is safe for ST7789 modules at short wire lengths.
+                Lower it if the panel shows tearing or garbage at bring-up.
+
+    endmenu
+
+    menu "Buttons (active-low, to GND)"
+
+        config QMX_BTN_UP_GPIO
+            int "Up button GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 4
+
+        config QMX_BTN_OK_GPIO
+            int "OK button GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 5
+
+        config QMX_BTN_DOWN_GPIO
+            int "Down button GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 6
+
+    endmenu
+
 endmenu

@@ -18,9 +18,9 @@
 #include "ui/theme.h"
 #include "lvgl.h"
 
-#define BTN_UP_GPIO 4
-#define BTN_OK_GPIO 5
-#define BTN_DOWN_GPIO 6
+#define BTN_UP_GPIO CONFIG_QMX_BTN_UP_GPIO
+#define BTN_OK_GPIO CONFIG_QMX_BTN_OK_GPIO
+#define BTN_DOWN_GPIO CONFIG_QMX_BTN_DOWN_GPIO
 
 #define BTN_POLL_MS 20
 #define BTN_DEBOUNCE_MS 40

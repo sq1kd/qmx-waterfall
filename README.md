@@ -1,200 +1,111 @@
-| Supported Targets | ESP32-H4 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | -------- | -------- | -------- | -------- |
+# QMX Waterfall
 
-# USB Host Library Example
+Firmware for an ESP32-S3 that turns a QRP Labs QMX into a standalone
+waterfall display: it is a USB host, pulls the radio's USB audio (I/Q when the
+radio is in IQ mode) and CAT status over the same cable, and renders a live
+spectrum + waterfall on a 76×284 ST7789 panel with three buttons.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Hardware
 
-This example demonstrates the basic usage of the [USB Host Library API](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s2/api-reference/peripherals/usb_host.html) by implementing a pseudo class driver and a Host Library task. The example does the following:
+Reference build:
 
-1. Install Host Library and register a client
-2. Waits for a device connection
-3. Prints the device's information (such as device/configuration/string descriptors)
-4. Waits for the device to disconnect
-5. Repeats steps 2 to 4 until a user pressess a button, which quits the `app`
-6. If the button has been pressed, while a USB device is still connected, the user will be prompted to remove the device and push the button again to quit the `app`
-7. Deregister the client, uninstall the Host Library and quit the `app`
+| Part | Detail |
+| --- | --- |
+| MCU | ESP32-S3 module, 16 MB flash, 8 MB octal PSRAM (`boards/n16r8`) |
+| Panel | ST7789 / ST7789P3, 76×284, SPI, no MISO |
+| Buttons | up / ok / down, active-low to GND |
+| Radio | QRP Labs QMX on the ESP32-S3 USB host port |
 
-The example demonstrates the following aspects of the USB Host Library API:
+Panel wiring (SPI2, native IOMUX; override per board in a profile):
 
-- How to use the Library API to:
-    - Install and uninstall the USB Host Library
-    - Run the library event handler function and usb host library task
-    - How to handle library events
-- How to use the Client API from a client task to:
-    - Register and deregister a client of the USB Host Library
-    - Run the client event handler functions
-    - How to handle client events via various callbacks
-    - Open and close a device
-    - Get a device's descriptors
+| Signal | GPIO |
+| --- | --- |
+| SCL / CLK | 12 |
+| SDA / MOSI | 11 |
+| CS | 10 |
+| DC | 9 |
+| RST | 8 |
+| BL (active-low) | 7 |
 
-## How to use example
+Buttons: up = 4, ok = 5, down = 6. The shutdown button defaults to GPIO 0
+(`CONFIG_APP_QUIT_PIN`).
 
-### Hardware Required
+PSRAM is optional at runtime: without it the display falls back to a partial
+internal draw buffer (`CONFIG_SPIRAM_IGNORE_NOTFOUND`), so the same image
+boots on a board whose PSRAM is absent or fails to train.
 
-* Development board with USB-OTG support.
-* Follow instruction in [examples/usb/README.md](../../README.md) for specific hardware setup.
+## Install a release
 
-### Configure the project
+Releases contain one factory image and one app image per board:
 
-```
-idf.py menuconfig
-```
+| File | Flash at | Effect |
+| --- | --- | --- |
+| `qmx-waterfall-<board>-<version>-factory.bin` | `0x0` | bootloader + partition table + app; **erases settings (NVS)** |
+| `qmx-waterfall-<board>-<version>-app.bin` | `0x10000` | app only; keeps settings |
+| `qmx-waterfall-<board>-<version>.sha256` | — | checksums for both |
 
-* The USB Host Stack has a maximum supported transfer size for control transfer during device enumeration. This size is specified via the USB_HOST_CONTROL_TRANSFER_MAX_SIZE configuration option and has a default value of 256 bytes. Therefore, if devices with length config/string descriptors are used, users may want to increase the size of this configuration.
-* Push button GPIO selection
-
-### Build and Flash
-
-Build the project and flash it to the board, then run monitor tool to view serial output:
-
-```
-idf.py -p PORT flash monitor
+```shell
+esptool -b 460800 --before default-reset --after hard-reset \
+  --chip esp32s3 write-flash 0x0 qmx-waterfall-n16r8-v0.1.0-factory.bin
 ```
 
-(Replace PORT with the name of the serial port to use.)
+Updating an existing install keeps the saved settings:
 
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
-
-## Example Output
-
-```
-I (305) main_task: Started on CPU0
-I (315) main_task: Calling app_main()
-I (315) USB host lib: USB host library example
-I (315) gpio: GPIO[0]| InputEn: 1| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:2
-I (325) USB host lib: Installing USB Host Library
-I (365) CLASS: Registering Client
-I (745) CLASS: Opening device at address 1
-I (745) CLASS: Getting device information
-I (745) CLASS: 	Full speed
-I (745) CLASS: 	bConfigurationValue 1
-I (745) CLASS: Getting device descriptor
-*** Device descriptor ***
-bLength 18
-bDescriptorType 1
-bcdUSB 2.00
-bDeviceClass 0xef
-bDeviceSubClass 0x2
-bDeviceProtocol 0x1
-bMaxPacketSize0 64
-idVendor 0x303a
-idProduct 0x1001
-bcdDevice 1.00
-iManufacturer 1
-iProduct 2
-iSerialNumber 3
-bNumConfigurations 1
-I (775) CLASS: Getting config descriptor
-*** Configuration descriptor ***
-bLength 9
-bDescriptorType 2
-wTotalLength 98
-bNumInterfaces 3
-bConfigurationValue 1
-iConfiguration 0
-bmAttributes 0xc0
-bMaxPower 500mA
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 0
-	bAlternateSetting 0
-	bNumEndpoints 1
-	bInterfaceClass 0x0
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x82	EP 2 IN
-		bmAttributes 0x3	INT
-		wMaxPacketSize 64
-		bInterval 1
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 1
-	bAlternateSetting 0
-	bNumEndpoints 2
-	bInterfaceClass 0x0
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x1	EP 1 OUT
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x81	EP 1 IN
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-	*** Interface descriptor ***
-	bLength 9
-	bDescriptorType 4
-	bInterfaceNumber 2
-	bAlternateSetting 0
-	bNumEndpoints 2
-	bInterfaceClass 0x1
-	iInterface 0
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x2	EP 2 OUT
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-		*** Endpoint descriptor ***
-		bLength 7
-		bDescriptorType 5
-		bEndpointAddress 0x83	EP 3 IN
-		bmAttributes 0x2	BULK
-		wMaxPacketSize 64
-		bInterval 1
-I (855) CLASS: Getting Manufacturer string descriptor
-Espressif
-I (855) CLASS: Getting Product string descriptor
-USB JTAG/serial debug unit
-I (865) CLASS: Getting Serial Number string descriptor
-7C:DF:A1:E0:10:50
-W (2855) USB host lib: To shutdown example, remove all USB devices and press button again.
-E (6135) USBH: Device 1 gone
-I (9545) CLASS: Deregistering Client
-I (9545) USB host lib: No more clients
-I (9545) USB host lib: All devices marked as free
-I (9545) USB host lib: No more clients and devices
-I (9645) USB host lib: End of the example
-I (9645) main_task: Returned from app_main()
+```shell
+esptool -b 460800 --before default-reset --after hard-reset \
+  --chip esp32s3 write-flash 0x10000 qmx-waterfall-n16r8-v0.1.0-app.bin
 ```
 
-## Troubleshooting
+## Build from source
 
-To obtain more debug, users should set the [log level](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s2/api-reference/system/log.html) to debug via menuconfig.
+[mise](https://mise.jdx.dev) pins the toolchain; ESP-IDF v6.1 is provisioned
+into `.idf/` on first bootstrap (see [RUN.md](RUN.md)):
 
-### Failing Enumeration
-
+```shell
+mise trust
+mise bootstrap
+mise run build
+ESPPORT=/dev/cu.usbmodem1101 mise run flash
+ESPPORT=/dev/cu.usbmodem1101 mise run monitor
+mise run test      # host tests, no board or ESP-IDF needed
 ```
-I (262) cpu_start: Starting scheduler on PRO CPU.
-I (268) DAEMON: Installing USB Host Library
-I (298) CLASS: Registering Client
-E (2748) HUB: Short string desc corrupt
-E (2748) HUB: Stage failed: CHECK_SHORT_MANU_STR_DESC
-```
 
-The log output demonstrates a device that has failed. The Hub Driver will output some error logs indicating which stage of enumeration has failed.
+`mise run release` builds the default board and writes the images above to
+`dist/`.
 
-### Blank String Descriptors
+## Board profiles
 
-The current USB Host Library will automatically cache the Manufacturer, Product, and Serial Number string descriptors of the device during enumeration. However, when fetching the string descriptors, the USB Host Library will only fetch those strings descriptors of they of LANGID code 0x0409 (i.e., English - United States). Therefore, if the example does not print a particular descriptor, it is likely that the string descriptor was not cached during enumeration.
+A board profile is a directory under `boards/` holding one
+`sdkconfig.defaults` with the hardware: `CONFIG_IDF_TARGET`, flash, PSRAM,
+panel and button pins (`boards/n16r8/sdkconfig.defaults`).
 
-### Windows VM
+Every build uses exactly one profile — `sdkconfig.defaults` (project-wide
+software settings) plus the profile's hardware defaults — and generates its own
+`sdkconfig` under `build/<id>/`. The committed `sdkconfig` is never used, so a
+clean clone builds the board the profile describes.
 
-```powershell
-esptool -b 460800 --before default-reset --after hard-reset --chip esp32s3 write-flash --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 qmx_waterfall.bin
-idf-monitor -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 .\qmx_waterfall.elf
-```
+- `mise run build` / `flash` / `release` use the default board set in
+  `mise.toml`; `QMX_BOARD=<id>` selects another.
+- Adding a board: copy `boards/n16r8`, set `CONFIG_IDF_TARGET` and the
+  hardware, and add it to the `firmware` matrix in `.github/workflows/ci.yml`
+  once its image is verified. Only boards in that matrix are built by CI and
+  published on a tag.
+- The panel resolution is fixed in code (`main/ui/geometry.h`); a different
+  panel size needs layout work, not just a new profile.
+
+## Versioning and releases
+
+There is no version-bump automation and no semantic-release: the release is
+the git tag. `mise run version` prints `git describe` for the nearest
+`vX.Y.Z` tag (`v0.1.0`, `v0.1.0-3-gabc1234`, plus `-dirty` for uncommitted
+parent-repo changes), and that string names the artifacts.
+
+CI builds every board in its matrix on every push; pushing a `vX.Y.Z` tag
+also publishes the images and checksums as a GitHub release. Between tags, `mise run release` produces
+`-<commit>`/`-dirty` images for testing that are never published.
+
+## Documentation
+
+- [RUN.md](RUN.md) — bootstrap, build, flash, release, tasks
+- [docs/CAT.md](docs/CAT.md) — CAT link behaviour, IQ recovery, `AI1;` hazard
+- [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) — ESP-IDF/esp-usb pins and patches

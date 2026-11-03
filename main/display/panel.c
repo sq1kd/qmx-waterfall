@@ -1,16 +1,24 @@
 /*
  * panel.c — ST7789P3 (76×284) via SPI, plus the LVGL port
  *
- * Pin assignment (SPI2 native IOMUX):
+ * The pin map and the frame-buffer window offsets come from the board
+ * profile (boards/<id>/sdkconfig.defaults, Kconfig menu "Display"); the
+ * defaults there match the reference board:
+ *
  *   SCL / CLK  → GPIO 12
  *   SDA / MOSI → GPIO 11
  *   CS         → GPIO 10
  *   DC         → GPIO  9
  *   RST        → GPIO  8
  *   BL         → GPIO  7   (on/off, active-low: 0 = backlight on)
+ *
+ * The panel size itself is fixed in code: the layout below (geometry.h,
+ * status.c) is calibrated for a 76×284 panel.
  */
 
 #include "display/display_priv.h"
+
+#include "sdkconfig.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -21,12 +29,12 @@
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
 
-#define DISP_SCL_GPIO 12
-#define DISP_SDA_GPIO 11
-#define DISP_CS_GPIO 10
-#define DISP_DC_GPIO 9
-#define DISP_RST_GPIO 8
-#define DISP_BL_GPIO 7
+#define DISP_SCL_GPIO CONFIG_QMX_DISP_SCL_GPIO
+#define DISP_SDA_GPIO CONFIG_QMX_DISP_SDA_GPIO
+#define DISP_CS_GPIO CONFIG_QMX_DISP_CS_GPIO
+#define DISP_DC_GPIO CONFIG_QMX_DISP_DC_GPIO
+#define DISP_RST_GPIO CONFIG_QMX_DISP_RST_GPIO
+#define DISP_BL_GPIO CONFIG_QMX_DISP_BL_GPIO
 
 /* Physical panel dimensions, in portrait orientation. */
 #define DISP_H_RES 76
@@ -34,18 +42,17 @@
 
 /*
  * ST7789 internal frame buffer is 240×320.
- * This 76×284 panel is typically mounted with the active window offset:
- *   x_gap = 82  (centres 76 px in the 240-wide frame)
- *   y_gap = 18  (shifts  284 px in the 320-tall  frame)
+ * The active 76×284 window sits at:
+ *   x_gap (columns, 82) — centres 76 px in the 240-wide frame
+ *   y_gap (rows, 18)    — shifts  284 px in the 320-tall  frame
  *
- * If text/graphics appear shifted, adjust these values to match your
- * specific panel module.
+ * Adjust the board profile if graphics appear shifted.
  */
-#define DISP_X_GAP 82
-#define DISP_Y_GAP 18
+#define DISP_X_GAP CONFIG_QMX_DISP_X_GAP
+#define DISP_Y_GAP CONFIG_QMX_DISP_Y_GAP
 
-/* SPI clock: 40 MHz is safe for most ST7789 modules at short wire lengths */
-#define DISP_SPI_CLK_HZ (40 * 1000 * 1000)
+/* Board profile: 40 MHz is safe for ST7789 modules at short wire lengths. */
+#define DISP_SPI_CLK_HZ CONFIG_QMX_DISP_SPI_CLK_HZ
 
 _Static_assert(DISP_H_RES == DISP_LOGICAL_H && DISP_V_RES == DISP_LOGICAL_W,
                "panel geometry does not match the rotated logical screen");
@@ -54,12 +61,14 @@ static const char *TAG = "display";
 
 lv_display_t *display_panel_init(void)
 {
+#if CONFIG_QMX_DISP_BL_GPIO >= 0
     const gpio_config_t bl_cfg = {
         .pin_bit_mask = BIT64(DISP_BL_GPIO),
         .mode = GPIO_MODE_OUTPUT,
     };
     ESP_ERROR_CHECK(gpio_config(&bl_cfg));
-    gpio_set_level(DISP_BL_GPIO, 0);
+    gpio_set_level(DISP_BL_GPIO, 0); /* active-low: 0 = on */
+#endif
 
     const spi_bus_config_t bus_cfg = {
         .mosi_io_num = DISP_SDA_GPIO,

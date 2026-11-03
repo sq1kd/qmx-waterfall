@@ -22,8 +22,8 @@ The project resolves these components from the submodule via `main/idf_component
 
 `vendor/esp-usb` stays pinned to an upstream commit so it can always be
 fetched. Fixes that must go on top are tracked in `patches/` and applied by
-`tools/vendor-patches.sh` (run by `mise bootstrap` and before every
-`mise run build`; re-running is a no-op).
+the hidden `vendor-patches` task, a dependency of every `mise run idf`
+call (and so of bootstrap, build and release); re-running is a no-op.
 
 - `0001-usb-host-retry-short-dev-desc.patch`: the enumerator re-issues the
   short `GET_DESCRIPTOR` after a zero-length or truncated response instead of
@@ -32,7 +32,7 @@ fetched. Fixes that must go on top are tracked in `patches/` and applied by
   one-shot enumerator disabled the root port and no device connect event ever
   reached the app.
 
-When updating the submodule, re-run `tools/vendor-patches.sh`; if the patch no
+When updating the submodule, run `mise run vendor-patches`; if the patch no
 longer applies, rebase it instead of dropping it.
 
 ## Update process

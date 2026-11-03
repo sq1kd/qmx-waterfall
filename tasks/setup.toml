@@ -1,0 +1,80 @@
+[bootstrap]
+description = "Provision ESP-IDF {{vars.idf_version}}, the boards' toolchains, the uv venv and submodules"
+run = '''
+set -euo pipefail
+root={{config_root}}
+ref={{vars.idf_version}}
+idf_path="$root/.idf/esp-idf"
+venv="$root/.idf/venv"
+targets=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"$/\1/p' "$root"/boards/*/sdkconfig.defaults |
+    sort -u | paste -sd, -)
+
+if [ ! -d "$idf_path/.git" ]; then
+    echo "Cloning ESP-IDF $ref into $idf_path"
+    git clone --depth 1 --branch "$ref" https://github.com/espressif/esp-idf.git "$idf_path"
+elif [ "$(git -C "$idf_path" describe --tags --always 2>/dev/null || true)" != "$ref" ]; then
+    echo "Checking out ESP-IDF $ref in $idf_path"
+    git -C "$idf_path" fetch --depth 1 origin tag "$ref"
+    git -C "$idf_path" checkout -q "$ref"
+fi
+git -C "$idf_path" submodule update --init --recursive --depth 1
+git -C "$root" submodule update --init --recursive
+
+python "$idf_path/tools/idf_tools.py" install --targets="$targets"
+
+constraints="$(
+    python - "$idf_path" <<'PY' | tail -n 1
+import os
+import sys
+
+sys.path.insert(0, os.path.join(sys.argv[1], "tools"))
+import idf_tools  # noqa: E402
+
+idf_tools.g.idf_path = sys.argv[1]
+idf_tools.g.idf_tools_path = os.environ.get("IDF_TOOLS_PATH") or os.path.expanduser(
+    idf_tools.IDF_TOOLS_PATH_DEFAULT
+)
+print(idf_tools.get_constraints(idf_tools.get_idf_version()))
+PY
+)"
+
+uv venv --allow-existing --python {{vars.python}} "$venv"
+uv pip install --python "$venv/bin/python" \
+    -r "$idf_path/tools/requirements/requirements.core.txt" \
+    -c "$constraints"
+
+# Smoke test; also applies patches/ through the idf task's dependency.
+# Managed components are fetched by the first build from dependencies.lock;
+# re-resolving them is `mise run deps`, never a side effect of bootstrap.
+mise run -q idf -- --version
+'''
+
+[deps]
+description = "Re-resolve managed components into dependencies.lock"
+run = "mise run idf -- update-dependencies"
+
+[vendor-patches]
+description = "Apply patches/ to the vendored esp-usb submodule (idempotent)"
+hide = true
+run = '''
+set -euo pipefail
+cd {{config_root}}
+sub=vendor/esp-usb
+if ! git -C "$sub" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "vendor/esp-usb is not a git checkout; run 'mise bootstrap' first" >&2
+    exit 1
+fi
+shopt -s nullglob
+for patch in "$PWD"/patches/*.patch; do
+    name=$(basename "$patch")
+    if git -C "$sub" apply --check "$patch" >/dev/null 2>&1; then
+        git -C "$sub" apply "$patch"
+        echo "applied $name"
+    elif git -C "$sub" apply --reverse --check "$patch" >/dev/null 2>&1; then
+        :
+    else
+        echo "cannot apply $name to $sub (submodule changed? update the patch)" >&2
+        exit 1
+    fi
+done
+'''

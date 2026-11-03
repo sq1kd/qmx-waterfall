@@ -1,0 +1,45 @@
+# Board profile: ESP32-S3 module with 16 MB flash and 8 MB octal PSRAM
+# (WROOM-1-N16R8 class part).
+#
+# Selected on top of the project sdkconfig.defaults; only hardware belongs
+# here. Keep the Kconfig defaults in main/Kconfig.projbuild in sync when the
+# wiring changes.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash and PSRAM -------------------------------------------------------
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# Optional at runtime: with no PSRAM the display falls back to a partial
+# internal draw buffer and the spectrum keeps its ring in internal RAM. This
+# also keeps one image usable on a board whose PSRAM fails to train.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# --- ST7789P3 76x284 panel (SPI2, native IOMUX) ----------------------------
+# SCL/CLK, SDA/MOSI, CS, DC, RST, BL (active-low: 0 = backlight on).
+
+CONFIG_QMX_DISP_SCL_GPIO=12
+CONFIG_QMX_DISP_SDA_GPIO=11
+CONFIG_QMX_DISP_CS_GPIO=10
+CONFIG_QMX_DISP_DC_GPIO=9
+CONFIG_QMX_DISP_RST_GPIO=8
+CONFIG_QMX_DISP_BL_GPIO=7
+
+# The 76x284 window sits inside the controller's 240x320 frame buffer.
+CONFIG_QMX_DISP_X_GAP=82
+CONFIG_QMX_DISP_Y_GAP=18
+
+# 40 MHz is safe for ST7789 modules at short wire lengths.
+CONFIG_QMX_DISP_SPI_CLK_HZ=40000000
+
+# --- Buttons (active-low, to GND) -----------------------------------------
+
+CONFIG_QMX_BTN_UP_GPIO=4
+CONFIG_QMX_BTN_OK_GPIO=5
+CONFIG_QMX_BTN_DOWN_GPIO=6

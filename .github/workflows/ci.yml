@@ -1,0 +1,119 @@
+name: CI
+
+# Every push builds the release boards. Pushing a vX.Y.Z tag additionally
+# publishes their images as a GitHub release; the tag is the version (there
+# is no version-bump automation), and `mise run version` must reproduce it.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  MISE_VERSION: 2026.8.14
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v5
+        with:
+          version: ${{ env.MISE_VERSION }}
+          install: false
+          env: false
+
+      - name: Host tests (ASan/UBSan, no ESP-IDF)
+        run: mise run test
+
+  firmware:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Boards built on every push and published on a tag.
+        board: [n16r8]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags for `git describe`, so branch builds are vX.Y.Z-N-gHASH.
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v5
+        with:
+          version: ${{ env.MISE_VERSION }}
+          install: false
+          env: false
+
+      # A tag build must be reproducible from the tag alone; fail before
+      # spending the build on a version that cannot be published.
+      - name: Verify version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(mise run -q version)
+          test "$version" = "$GITHUB_REF_NAME" || {
+            echo "version '$version' does not match tag '$GITHUB_REF_NAME'" >&2
+            exit 1
+          }
+
+      - name: Restore ESP-IDF checkout and toolchains
+        uses: actions/cache@v6
+        with:
+          path: |
+            .idf/esp-idf
+            ~/.espressif/tools
+            ~/.espressif/espidf.constraints.*
+          key: esp-idf-${{ runner.os }}-${{ hashFiles('mise.toml', 'boards/*/sdkconfig.defaults') }}
+          restore-keys: |
+            esp-idf-${{ runner.os }}-
+
+      - name: Bootstrap tools, ESP-IDF and components
+        run: mise bootstrap
+
+      # Starts from sdkconfig.defaults + the board profile, never from a
+      # committed sdkconfig: the same path a clean clone takes.
+      - name: Build ${{ matrix.board }}
+        env:
+          QMX_BOARD: ${{ matrix.board }}
+        run: mise run release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qmx-waterfall-${{ matrix.board }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host-tests, firmware]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: qmx-waterfall-*
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
