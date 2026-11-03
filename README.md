@@ -11,9 +11,10 @@ the radio needs no extra configuration.
 
 ## The story
 
-This was a quick side project to see how it works, and it worked
-surprisingly well. Then QRP power turned out not to be enough, a different
-radio arrived, and rather than leave this on a shelf it is published here.
+I wrote this in early 2026, right after building my QMX+, as a quick side
+project to see how it works, and it worked surprisingly well. Then QRP power
+turned out not to be enough and a different radio arrived. Rather than leave
+this on a shelf, I polished it a bit in November 2026 and published it here.
 There are more powerful alternative projects out there now, and you may want
 to check them out too.
 
